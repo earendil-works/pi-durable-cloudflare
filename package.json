@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.2.3",
-    "@cloudflare/workers-types": "5.20260923.1",
+    "@cloudflare/workers-types": "5.20260922.1",
     "oxfmt": "0.70.0",
     "shx": "0.4.0",
     "typescript": "5.9.3",
