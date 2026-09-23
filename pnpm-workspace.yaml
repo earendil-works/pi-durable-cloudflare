@@ -1,0 +1,10 @@
+allowBuilds:
+  "@google/genai": true
+  esbuild: true
+  protobufjs: true
+  workerd: true
+minimumReleaseAgeExclude:
+  - "@cloudflare/workers-types@5.20260923.1"
+  - "@earendil-works/chord@0.87.1"
+  - "@earendil-works/pi-ai@0.87.1"
+  - "@earendil-works/pi-telemetry@0.87.1"
