@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type ConversationRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
-import { CloudflareSqliteDatabase } from "./sqlite.ts";
+import { createCloudflareSqliteDatabase } from "./sqlite.ts";
 
 export class Session extends DurableObject<Env> {
   readonly storage: Promise<SqliteStorage>;
@@ -10,7 +10,7 @@ export class Session extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.storage = ctx.blockConcurrencyWhile(() =>
-      SqliteStorage.open(new CloudflareSqliteDatabase(ctx.storage)),
+      SqliteStorage.open(createCloudflareSqliteDatabase(ctx.storage)),
     );
   }
 

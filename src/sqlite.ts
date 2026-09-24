@@ -6,7 +6,7 @@ import type {
 
 const binding = (value: SqliteValue): SqlStorageValue => {
   if (typeof value === "bigint") {
-    throw new TypeError("Cloudflare Durable Object SQLite does not support bigint bindings");
+    throw new TypeError("Cloudflare SqlStorage does not accept bigint query parameters");
   }
   if (!(value instanceof Uint8Array)) return value;
   const copy = new Uint8Array(value.byteLength);
@@ -22,53 +22,43 @@ const row = <T extends object>(value: Record<string, SqlStorageValue>): T =>
     ]),
   ) as T;
 
-class CloudflareSqliteStatement implements SqliteStatement {
-  private readonly sql: SqlStorage;
-  private readonly query: string;
+function createCloudflareSqliteStatement(sql: SqlStorage, query: string): SqliteStatement {
+  return {
+    run(...params): void {
+      sql.exec(query, ...params.map(binding));
+    },
 
-  constructor(sql: SqlStorage, query: string) {
-    this.sql = sql;
-    this.query = query;
-  }
+    get<T extends object>(...params: SqliteValue[]): T | undefined {
+      const result = sql.exec(query, ...params.map(binding)).next();
+      return result.done ? undefined : row<T>(result.value);
+    },
 
-  run(...params: SqliteValue[]): void {
-    this.sql.exec(this.query, ...params.map(binding));
-  }
-
-  get<T extends object>(...params: SqliteValue[]): T | undefined {
-    const result = this.sql.exec(this.query, ...params.map(binding)).next();
-    return result.done ? undefined : row<T>(result.value);
-  }
-
-  all<T extends object>(...params: SqliteValue[]): T[] {
-    return this.sql
-      .exec(this.query, ...params.map(binding))
-      .toArray()
-      .map(row<T>);
-  }
+    all<T extends object>(...params: SqliteValue[]): T[] {
+      return sql
+        .exec(query, ...params.map(binding))
+        .toArray()
+        .map(row<T>);
+    },
+  };
 }
 
 /** Adapts one Durable Object's synchronous SQLite API to pi-durable's portable facade. */
-export class CloudflareSqliteDatabase implements SqliteDatabase {
-  private readonly storage: DurableObjectStorage;
+export function createCloudflareSqliteDatabase(storage: DurableObjectStorage): SqliteDatabase {
+  return {
+    exec(sql): void {
+      storage.sql.exec(sql);
+    },
 
-  constructor(storage: DurableObjectStorage) {
-    this.storage = storage;
-  }
+    prepare(sql): SqliteStatement {
+      return createCloudflareSqliteStatement(storage.sql, sql);
+    },
 
-  exec(sql: string): void {
-    this.storage.sql.exec(sql);
-  }
+    transaction<T>(callback: () => T): T {
+      return storage.transactionSync(callback);
+    },
 
-  prepare(sql: string): SqliteStatement {
-    return new CloudflareSqliteStatement(this.storage.sql, sql);
-  }
-
-  transaction<T>(callback: () => T): T {
-    return this.storage.transactionSync(callback);
-  }
-
-  close(): void {
-    // The Durable Object runtime owns the SQLite connection lifetime.
-  }
+    close(): void {
+      // The Durable Object runtime owns the SQLite connection lifetime.
+    },
+  };
 }

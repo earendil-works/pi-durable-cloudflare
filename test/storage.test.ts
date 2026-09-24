@@ -3,7 +3,7 @@ import { env, exports } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, it } from "vitest";
 import { registerStorageConformance } from "@earendil-works/pi-durable/testing";
-import { CloudflareSqliteDatabase } from "../src/sqlite.ts";
+import { createCloudflareSqliteDatabase } from "../src/sqlite.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -17,16 +17,16 @@ registerStorageConformance(
 );
 
 describe("Cloudflare Durable Object example", () => {
-  it("adapts binary values and rejects unsupported bigint bindings", async () => {
+  it("adapts binary values and rejects bigint query parameters", async () => {
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
     await runInDurableObject(stub, (_instance, state) => {
-      const database = new CloudflareSqliteDatabase(state.storage);
+      const database = createCloudflareSqliteDatabase(state.storage);
       const statement = database.prepare("SELECT ? AS value");
       const bytes = new Uint8Array([0, 1, 2, 3, 4]).subarray(1, 4);
       expect(statement.get<{ readonly value: Uint8Array }>(bytes)).toEqual({
         value: new Uint8Array([1, 2, 3]),
       });
-      expect(() => statement.get(1n)).toThrow("does not support bigint bindings");
+      expect(() => statement.get(1n)).toThrow("does not accept bigint query parameters");
     });
   });
 
