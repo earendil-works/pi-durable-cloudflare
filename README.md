@@ -22,6 +22,9 @@ From this directory:
 ```sh
 pnpm format
 pnpm test
+pnpm benchmark
 pnpm check
 pnpm dev
 ```
+
+`pnpm benchmark` runs the reusable pi-durable storage workloads against Cloudflare Durable Object SQLite in the local Workers runtime. Benchmark results vary by machine and are not production latency measurements.

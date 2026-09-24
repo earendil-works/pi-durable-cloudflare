@@ -5,6 +5,8 @@ const route = /^\/sessions\/([^/]+)\/?$/;
 const json = (body: unknown, status: number, headers?: HeadersInit): Response =>
   Response.json(body, { status, headers });
 
+// Add authentication and production error handling:
+// https://developers.cloudflare.com/durable-objects/best-practices/error-handling/
 export default {
   async fetch(request, env): Promise<Response> {
     const match = route.exec(new URL(request.url).pathname);

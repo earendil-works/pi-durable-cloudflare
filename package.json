@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "benchmark": "vitest bench --run --config vitest.benchmark.config.ts",
     "clean": "shx rm -rf .wrangler",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
