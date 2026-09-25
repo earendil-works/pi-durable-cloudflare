@@ -2,6 +2,7 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, it } from "vitest";
+import { type EntryId, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { registerStorageConformance } from "@earendil-works/pi-durable/testing";
 import { createCloudflareSqliteDatabase } from "../src/sqlite.ts";
 
@@ -52,10 +53,18 @@ describe("Cloudflare Durable Object example", () => {
     const stub = env.SESSIONS.getByName("eviction");
     const entryId = await runInDurableObject(stub, async (instance) => {
       const storage = await instance.storage;
-      await storage.commit([{ type: "conversation", value: { id: 1 } }], context);
-      const id = await storage.mintId();
       await storage.commit(
-        [{ type: "entry", value: { id, conversationId: 1, kind: "before-eviction" } }],
+        [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }],
+        context,
+      );
+      const id = await storage.mintId<EntryId>();
+      await storage.commit(
+        [
+          {
+            type: "entry",
+            value: { id, conversationId: ROOT_CONVERSATION_ID, kind: "before-eviction" },
+          },
+        ],
         context,
       );
       return id;
@@ -64,10 +73,14 @@ describe("Cloudflare Durable Object example", () => {
     await evictDurableObject(stub);
 
     const recovered = await runInDurableObject(stub, async (instance) =>
-      (await instance.storage).entry(entryId, context),
+      (await instance.storage).entry(ROOT_CONVERSATION_ID, entryId, context),
     );
     expect(recovered).toEqual({
-      entry: { id: entryId, conversationId: 1, kind: "before-eviction" },
+      entry: {
+        id: entryId,
+        conversationId: ROOT_CONVERSATION_ID,
+        kind: "before-eviction",
+      },
       commitSeq: 2,
     });
   });
