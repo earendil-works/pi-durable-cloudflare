@@ -31,22 +31,77 @@ describe("Cloudflare Durable Object example", () => {
     });
   });
 
-  it("routes named sessions and creates the root conversation idempotently", async () => {
+  it("creates named sessions idempotently and reconstructs Session after eviction", async () => {
     const url = "https://example.com/sessions/example";
     const missing = await exports.default.fetch(url);
     expect(missing.status).toBe(404);
 
-    const created = await exports.default.fetch(url, { method: "POST" });
-    expect(created.status).toBe(201);
-    expect(await created.json()).toEqual({ id: 1 });
+    const created = await Promise.all([
+      exports.default.fetch(url, { method: "POST" }),
+      exports.default.fetch(url, { method: "POST" }),
+    ]);
+    expect(created.map(({ status }) => status).sort()).toEqual([200, 201]);
+    const conversations = await Promise.all(created.map((response) => response.json()));
+    expect(conversations[0]).toMatchObject({ id: expect.any(Number) });
+    expect(conversations[1]).toEqual(conversations[0]);
 
-    const repeated = await exports.default.fetch(url, { method: "POST" });
-    expect(repeated.status).toBe(200);
-    expect(await repeated.json()).toEqual({ id: 1 });
+    await evictDurableObject(env.SESSIONS.getByName("example"));
 
     const fetched = await exports.default.fetch(url);
     expect(fetched.status).toBe(200);
-    expect(await fetched.json()).toEqual({ id: 1 });
+    expect(await fetched.json()).toEqual(conversations[0]);
+  });
+
+  it("adopts a legacy root conversation without losing its entries", async () => {
+    const stub = env.SESSIONS.getByName("legacy-root");
+    const entryId = await runInDurableObject(stub, async (instance) => {
+      const storage = await instance.storage;
+      await storage.commit(
+        [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }],
+        context,
+      );
+      const id = await storage.mintId<EntryId>();
+      await storage.commit(
+        [
+          {
+            type: "entry",
+            value: { id, conversationId: ROOT_CONVERSATION_ID, kind: "legacy" },
+          },
+        ],
+        context,
+      );
+      return id;
+    });
+
+    const migrated = await exports.default.fetch("https://example.com/sessions/legacy-root");
+    expect(migrated.status).toBe(200);
+    expect(await migrated.json()).toEqual({ id: ROOT_CONVERSATION_ID });
+
+    await evictDurableObject(stub);
+
+    const fetched = await exports.default.fetch("https://example.com/sessions/legacy-root");
+    expect(fetched.status).toBe(200);
+    expect(await fetched.json()).toEqual({ id: ROOT_CONVERSATION_ID });
+
+    const recovered = await runInDurableObject(stub, async (instance) =>
+      (await instance.storage).entry(ROOT_CONVERSATION_ID, entryId, context),
+    );
+    expect(recovered?.entry).toEqual({
+      id: entryId,
+      conversationId: ROOT_CONVERSATION_ID,
+      kind: "legacy",
+    });
+  });
+
+  it("fails when primary conversation metadata is dangling", async () => {
+    const stub = env.SESSIONS.getByName("dangling-primary");
+    const created = await stub.createPrimaryConversation();
+    await runInDurableObject(stub, async (instance, state) => {
+      state.storage.sql.exec("DELETE FROM conversations WHERE id = ?", created.conversation.id);
+      await expect(instance.primaryConversation()).rejects.toMatchObject({
+        code: "PRIMARY_CONVERSATION_MISSING",
+      });
+    });
   });
 
   it("reopens SqliteStorage over persisted Durable Object data after eviction", async () => {

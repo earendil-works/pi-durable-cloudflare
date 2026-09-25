@@ -1,12 +1,12 @@
 # pi-durable on Cloudflare Durable Objects
 
-Example of `@earendil-works/pi-durable`'s for Cloudflare. Each session is its own Durable Object, with session data stored in SQLite using a custom adapter. This implementation shows how to use the built-in conformance test suite to ensure a custom storage backend works correctly.
+Example of `@earendil-works/pi-durable` on Cloudflare. Each named session is its own Durable Object, with session data stored in SQLite using a custom adapter. The Durable Object opens the storage and constructs a transactional `Session` inside `blockConcurrencyWhile()`, so request methods always receive a ready Session and eviction reconstructs it over persisted data. The implementation also uses the built-in conformance test suite to verify the custom storage backend.
 
 Sessions are created and accessed via these endpoints:
 
 ```text
-POST /sessions/<name>  create the root conversation idempotently
-GET  /sessions/<name>  read the root conversation
+POST /sessions/<name>  create the primary conversation idempotently
+GET  /sessions/<name>  read the primary conversation
 ```
 
 ## Install

@@ -21,11 +21,11 @@ export default {
     const session = env.SESSIONS.getByName(name);
     switch (request.method) {
       case "POST": {
-        const result = await session.createRoot();
+        const result = await session.createPrimaryConversation();
         return json(result.conversation, result.created ? 201 : 200);
       }
       case "GET": {
-        const conversation = await session.root();
+        const conversation = await session.primaryConversation();
         return conversation === undefined
           ? json({ error: "Session not found" }, 404)
           : json(conversation, 200);
