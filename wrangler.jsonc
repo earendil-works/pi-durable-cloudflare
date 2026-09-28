@@ -3,13 +3,6 @@
   "name": "pi-durable-cloudflare-do",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-23",
-  "alias": {
-    "@earendil-works/pi-durable": "../../.herdr/worktrees/pi/dev-log/packages/durable/src/index.ts",
-    "@earendil-works/pi-durable/storage/sqlite": "../../.herdr/worktrees/pi/dev-log/packages/durable/src/storage/sqlite/index.ts",
-    "@earendil-works/pi-durable/testing": "../../.herdr/worktrees/pi/dev-log/packages/durable/src/testing/index.ts",
-    "@earendil-works/chord/context": "../../.herdr/worktrees/pi/dev-log/packages/chord/src/context/index.ts",
-    "@earendil-works/chord/delta": "../../.herdr/worktrees/pi/dev-log/packages/chord/src/delta/index.ts",
-  },
   "durable_objects": {
     "bindings": [
       {

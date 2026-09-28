@@ -7,9 +7,6 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true,
-    "paths": {
-      "@earendil-works/pi-ai": ["./types/pi-ai.d.ts"]
-    },
     "skipLibCheck": true,
     "strict": true,
     "target": "ES2022",

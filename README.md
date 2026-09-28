@@ -1,13 +1,21 @@
 # pi-durable on Cloudflare Durable Objects
 
-Example of `@earendil-works/pi-durable` on Cloudflare. Each named session is its own Durable Object, with session data stored in SQLite using a custom adapter. The Durable Object opens the storage and constructs a transactional `Session` inside `blockConcurrencyWhile()`, so request methods always receive a ready Session and eviction reconstructs it over persisted data. The implementation also uses the built-in conformance test suite to verify the custom storage backend.
+Example of an `@earendil-works/pi-durable` Harness hosted in a Cloudflare Durable Object. Each named agent session is one Durable Object, with Harness state stored in SQLite through a custom storage adapter.
 
-Sessions are created and accessed via these endpoints:
+The platform-independent composition in `src/agent.ts` owns the model collection and extension registry. The Durable Object opens SQLite and the Harness inside `blockConcurrencyWhile()`, so event delivery starts only after local initialization completes and eviction reconstructs the Harness over persisted state.
+
+The temporary HTTP surface treats each named session as one replaceable Harness configuration resource:
 
 ```text
-POST /sessions/<name>  create the primary conversation idempotently
-GET  /sessions/<name>  read the primary conversation
+GET /session/<id>  read the root conversation's configuration
+PUT /session/<id>  create the root if needed and replace its configuration
 ```
+
+`PUT` accepts the built-in `ConversationConfigState`: `{ "model"?: { "provider": "...", "modelId": "..." }, "thinkingLevel": "...", "activeTools": ["..."] }`. Omit `model` to clear model selection. Active tool names must exist in the application registry.
+
+A future `POST /session/<id>/prompt` route should use durable submissions once the Harness implements the submission and turn-execution loop. This sample does not append a user entry and pretend that an agent ran.
+
+The project also runs pi-durable's reusable storage conformance and benchmark suites against Cloudflare Durable Object SQLite.
 
 ## Install
 
@@ -27,4 +35,4 @@ pnpm check
 pnpm dev
 ```
 
-`pnpm benchmark` runs the reusable pi-durable storage workloads against Cloudflare Durable Object SQLite in the local Workers runtime. Benchmark results vary by machine and are not production latency measurements.
+`pnpm benchmark` runs the reusable pi-durable storage workloads in the local Workers runtime. Results vary by machine and are not production latency measurements.

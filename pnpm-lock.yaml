@@ -11,6 +11,9 @@ importers:
       '@earendil-works/chord':
         specifier: link:../../.herdr/worktrees/pi/dev-log/packages/chord
         version: link:../../.herdr/worktrees/pi/dev-log/packages/chord
+      '@earendil-works/pi-ai':
+        specifier: link:../../.herdr/worktrees/pi/dev-log/packages/ai
+        version: link:../../.herdr/worktrees/pi/dev-log/packages/ai
       '@earendil-works/pi-durable':
         specifier: link:../../.herdr/worktrees/pi/dev-log/packages/durable
         version: link:../../.herdr/worktrees/pi/dev-log/packages/durable
