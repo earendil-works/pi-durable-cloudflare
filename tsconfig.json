@@ -3,7 +3,7 @@
     "customConditions": ["source"],
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
-    "lib": ["ES2022"],
+    "lib": ["ES2024"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true,

@@ -7,7 +7,9 @@ import {
   seedStorageBenchmark,
   seedStorageWriteBenchmark,
 } from "@earendil-works/pi-durable/testing";
+import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { bench, describe } from "vitest";
+import { createCloudflareSqliteDatabase } from "../src/sqlite.ts";
 
 const BACKEND_NAME = "Cloudflare Durable Object SQLite";
 const READ_OPTIONS = {
@@ -25,12 +27,21 @@ const WRITE_OPTIONS = {
 
 type SessionStub = ReturnType<typeof env.SESSIONS.get>;
 
+const storageByState = new WeakMap<DurableObjectState, Promise<SqliteStorage>>();
+
 function createStub(): SessionStub {
   return env.SESSIONS.get(env.SESSIONS.newUniqueId());
 }
 
 async function useStorage<T>(stub: SessionStub, use: (storage: Storage) => Promise<T>): Promise<T> {
-  return runInDurableObject(stub, async (instance) => use(await instance.storage));
+  return runInDurableObject(stub, async (_instance, state) => {
+    let storage = storageByState.get(state);
+    if (storage === undefined) {
+      storage = SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
+      storageByState.set(state, storage);
+    }
+    return use(await storage);
+  });
 }
 
 function assertResult(name: string, actual: number, expected: number): void {

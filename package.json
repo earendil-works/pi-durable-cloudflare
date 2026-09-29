@@ -8,7 +8,7 @@
     "clean": "shx rm -rf .wrangler",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "check": "oxfmt --check . && wrangler types --include-runtime false --check && tsc && wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "check": "oxfmt --check . && wrangler types --env-file .dev.vars.example --include-runtime false --check && tsc && wrangler deploy --dry-run --outdir .wrangler/dry-run",
     "dev": "wrangler dev",
     "test": "vitest --run"
   },
