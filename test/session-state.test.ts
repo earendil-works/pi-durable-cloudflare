@@ -535,4 +535,48 @@ describe("session event reducer", () => {
     });
     expect(state.snapshots[1]?.failure).toBeUndefined();
   });
+
+  it("tracks queued inputs across agent snapshots until the inbox drains", () => {
+    const inbox = (items: unknown[]) =>
+      event({ type: "conversation.inbox", conversationId: 1, items });
+    let state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: inbox([{ submissionId: 5, mode: "followUp", text: "And tomorrow?" }]),
+    });
+    state = sessionReducer(state, {
+      type: "event",
+      event: event({
+        type: "conversation.events",
+        conversationId: 1,
+        events: [
+          {
+            type: "snapshot",
+            entries: [],
+            run: { inputs: [3] },
+            tools: [],
+            compactions: [],
+            inbox: [{ id: 5, mode: "followUp" }],
+            config: { thinkingLevel: "off", activeTools: [] },
+            usage: { models: {}, tools: {} },
+          },
+        ],
+      }),
+    });
+    expect(state.snapshots[1]?.queued).toEqual([
+      { submissionId: 5, mode: "followUp", text: "And tomorrow?" },
+    ]);
+
+    state = sessionReducer(state, { type: "event", event: inbox([]) });
+    expect(state.snapshots[1]?.queued).toEqual([]);
+  });
+
+  it("rejects malformed queued inputs", () => {
+    expect(() =>
+      event({
+        type: "conversation.inbox",
+        conversationId: 1,
+        items: [{ submissionId: 5, mode: "write", text: "x" }],
+      }),
+    ).toThrow("Queued input is invalid");
+  });
 });

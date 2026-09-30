@@ -17,6 +17,7 @@ import {
   parseScheduledInstruction,
   type ConnectionStatus,
   type ConversationSummary,
+  type QueuedInput,
   type ServerEvent,
 } from "../protocol.ts";
 
@@ -71,6 +72,8 @@ export interface ConversationSnapshot {
   readonly live: LiveConversation | null;
   readonly tools: readonly ToolProgress[];
   readonly compactions: readonly LiveCompaction[];
+  /** Inputs submitted during a running turn, waiting to be placed after it. */
+  readonly queued: readonly QueuedInput[];
   readonly config?: Readonly<ConversationConfigState>;
   readonly usage?: Readonly<UsageState>;
   readonly failure?: {
@@ -135,6 +138,17 @@ function reduceServerEvent(state: SessionState, event: ServerEvent): SessionStat
         snapshots: { ...state.snapshots, [event.conversationId]: conversation },
       };
     }
+    case "conversation.inbox": {
+      const before =
+        state.snapshots[event.conversationId] ?? emptyConversation(event.conversationId);
+      return {
+        ...state,
+        snapshots: {
+          ...state.snapshots,
+          [event.conversationId]: { ...before, queued: event.items },
+        },
+      };
+    }
     case "command.result":
       if (!event.ok) return { ...state, error: event.error.message };
       return event.conversationId === undefined ||
@@ -152,6 +166,7 @@ const emptyConversation = (id: number): ConversationSnapshot => ({
   live: null,
   tools: [],
   compactions: [],
+  queued: [],
 });
 
 function reduceAgentEvent(
@@ -160,7 +175,7 @@ function reduceAgentEvent(
 ): ConversationSnapshot {
   switch (event.type) {
     case "snapshot":
-      return snapshotConversation(conversation.id, event);
+      return snapshotConversation(conversation, event);
     case "run_start":
     case "turn_start":
       return {
@@ -253,10 +268,14 @@ function reduceAgentEvent(
   }
 }
 
-function snapshotConversation(id: number, event: SnapshotEvent): ConversationSnapshot {
+/** Replace everything the agent snapshot describes; the queue arrives separately as `conversation.inbox`. */
+function snapshotConversation(
+  conversation: ConversationSnapshot,
+  event: SnapshotEvent,
+): ConversationSnapshot {
   const partial = event.generation?.message;
   return {
-    id,
+    id: conversation.id,
     entries: event.entries.map(transcriptEntry),
     live: liveConversation(event.run !== undefined, partial, event.generation?.retry),
     tools: event.tools.map((tool) => ({
@@ -274,6 +293,7 @@ function snapshotConversation(id: number, event: SnapshotEvent): ConversationSna
     })),
     config: event.config,
     usage: event.usage,
+    queued: conversation.queued,
     ...(partial === undefined ? {} : { partial }),
   };
 }

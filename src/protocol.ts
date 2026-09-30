@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@earendil-works/pi-durable";
+import type { AgentEvent, InboxState } from "@earendil-works/pi-durable";
 
 export const ROOT_CONVERSATION_ID = 1;
 export const MAX_PROMPT_CHARACTERS = 100_000;
@@ -26,6 +26,38 @@ export function parseScheduledInstruction(content: string): string | undefined {
   const text = content.slice(SCHEDULED_INSTRUCTION_PREFIX.length);
   const note = text.lastIndexOf(RECURRENCE_NOTE_PREFIX);
   return note === -1 ? text : text.slice(0, note);
+}
+
+/** Display text of queued user input content: a string or text/image parts. */
+function userInputText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (!isRecord(part)) return "";
+      if (part.type === "text" && typeof part.text === "string") return part.text;
+      if (part.type === "image") return "[Image]";
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** A user input waiting in a conversation's inbox for the current turn to finish. */
+export interface QueuedInput {
+  readonly submissionId: number;
+  readonly mode: "steer" | "followUp";
+  readonly text: string;
+}
+
+/** Queued user inputs of a conversation's `pi.inbox` document; passive writes are not user messages. */
+export function queuedInputs(inbox: Readonly<InboxState> | undefined): QueuedInput[] {
+  const items: QueuedInput[] = [];
+  for (const item of inbox?.items ?? []) {
+    if (item.mode === "write") continue;
+    items.push({ submissionId: item.id, mode: item.mode, text: userInputText(item.content) });
+  }
+  return items;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "failed";
@@ -93,6 +125,11 @@ export type ServerEvent =
       readonly type: "conversation.events";
       readonly conversationId: number;
       readonly events: readonly AgentEvent[];
+    }
+  | {
+      readonly type: "conversation.inbox";
+      readonly conversationId: number;
+      readonly items: readonly QueuedInput[];
     }
   | CommandResult
   | {
@@ -238,6 +275,25 @@ export function parseServerEventEnvelope(message: string): ServerEvent {
         conversationId,
         events: value.events as unknown as readonly AgentEvent[],
       };
+    }
+    case "conversation.inbox": {
+      const conversationId = requireId(value.conversationId, "conversationId");
+      if (!Array.isArray(value.items)) throw new Error("Conversation inbox payload is invalid");
+      const items = value.items.map((item): QueuedInput => {
+        if (
+          !isRecord(item) ||
+          (item.mode !== "steer" && item.mode !== "followUp") ||
+          typeof item.text !== "string"
+        ) {
+          throw new Error("Queued input is invalid");
+        }
+        return {
+          submissionId: requireId(item.submissionId, "submissionId"),
+          mode: item.mode,
+          text: item.text,
+        };
+      });
+      return { type: value.type, conversationId, items };
     }
     case "command.result": {
       const requestId = requireRequestId(value.requestId);

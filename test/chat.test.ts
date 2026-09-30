@@ -17,12 +17,17 @@ const jsonMessages = (socket: WebSocket) => {
     if (resolve === undefined) queued.push(value);
     else resolve(value);
   });
+  const next = <T>(): Promise<T> => {
+    const value = queued.shift();
+    return value === undefined
+      ? new Promise((resolve) => waiting.push((message) => resolve(message as T)))
+      : Promise.resolve(value as T);
+  };
   return {
-    next: <T>(): Promise<T> => {
-      const value = queued.shift();
-      return value === undefined
-        ? new Promise((resolve) => waiting.push((message) => resolve(message as T)))
-        : Promise.resolve(value as T);
+    next,
+    /** Session snapshot, root conversation events, and root inbox. */
+    skipConnectFrames: async (): Promise<void> => {
+      for (let index = 0; index < 3; index++) await next();
     },
   };
 };
@@ -108,6 +113,12 @@ describe("chat application", () => {
       ],
     });
 
+    await expect(messages.next()).resolves.toEqual({
+      type: "conversation.inbox",
+      conversationId: 1,
+      items: [],
+    });
+
     socket!.close(1000, "test complete");
   });
 
@@ -120,8 +131,7 @@ describe("chat application", () => {
     const socket = response.webSocket!;
     const messages = jsonMessages(socket);
     socket.accept();
-    await messages.next();
-    await messages.next();
+    await messages.skipConnectFrames();
 
     await evictDurableObject(env.SESSIONS.getByName(sessionId));
     socket.send(
@@ -152,8 +162,7 @@ describe("chat application", () => {
     const socket = response.webSocket!;
     const messages = jsonMessages(socket);
     socket.accept();
-    await messages.next();
-    await messages.next();
+    await messages.skipConnectFrames();
     const closed = new Promise<CloseEvent>((resolve) =>
       socket.addEventListener("close", resolve, { once: true }),
     );
@@ -175,8 +184,7 @@ describe("chat application", () => {
     const socket = response.webSocket!;
     const messages = jsonMessages(socket);
     socket.accept();
-    await messages.next();
-    await messages.next();
+    await messages.skipConnectFrames();
     const closed = new Promise<CloseEvent>((resolve) =>
       socket.addEventListener("close", resolve, { once: true }),
     );
@@ -213,8 +221,7 @@ describe("chat application", () => {
     const socket = response.webSocket!;
     const messages = jsonMessages(socket);
     socket.accept();
-    await messages.next();
-    await messages.next();
+    await messages.skipConnectFrames();
 
     socket.send(
       JSON.stringify({

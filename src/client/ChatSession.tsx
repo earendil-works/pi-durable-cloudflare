@@ -48,7 +48,6 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
   const renderedConversationRef = useRef<number | undefined>(undefined);
   const activeSummary = session.conversations.find(({ id }) => id === session.activeConversationId);
   const activeConversationId = session.activeConversationId;
-  const busy = session.activeConversation?.live?.active ?? false;
 
   useLayoutEffect(() => {
     const transcript = transcriptRef.current;
@@ -246,6 +245,22 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
               {session.activeConversation.failure.message}
             </p>
           )}
+
+          {session.activeConversation === undefined ||
+          session.activeConversation.queued.length === 0 ? null : (
+            <ol className="transcript-list queued-inputs" aria-label="Queued messages">
+              {session.activeConversation.queued.map((input) => (
+                <li key={input.submissionId}>
+                  <article className="transcript-message transcript-message--user transcript-message--queued">
+                    <header>
+                      <strong>User</strong> <span>Queued</span>
+                    </header>
+                    <MessageText text={input.text} />
+                  </article>
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
 
         <form className="prompt-bar" onSubmit={submit}>
@@ -266,7 +281,6 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             disabled={
               session.status !== "connected" ||
               session.activeConversationId === undefined ||
-              busy ||
               submitting ||
               draft.trim().length === 0
             }

@@ -154,6 +154,14 @@ body:has(.session-workspace) {
   margin-block-start: 1rem;
 }
 
+.transcript-message--queued {
+  opacity: 0.6;
+}
+
+.queued-inputs {
+  margin-block-start: 1rem;
+}
+
 .tool-activity pre {
   max-inline-size: 100%;
   overflow-x: auto;

@@ -2,13 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type AgentEventStream,
-  ConversationBusy,
   type Conversation,
   type ConversationId,
   type ConversationRecord,
   type Cursor,
   type EntryId,
   type Harness as PiHarness,
+  InboxDoc,
   type TaskId,
   watchEvents,
 } from "@earendil-works/pi-durable";
@@ -21,6 +21,7 @@ import {
   parseClientCommand,
   type ClientCommand,
   type ConversationSummary,
+  queuedInputs,
   type ServerEvent,
 } from "./protocol.ts";
 import { createCloudflareSqliteDatabase } from "./sqlite.ts";
@@ -134,16 +135,16 @@ export class Session extends DurableObject<Env> {
     try {
       await this.#handleCommand(socket, command);
     } catch (error) {
-      const code = error instanceof ConversationBusy ? "conversation_busy" : "command_failed";
-      if (!(error instanceof ConversationBusy)) {
-        reportError("Session command failed", error, { command: command.type });
-      }
+      reportError("Session command failed", error, { command: command.type });
       this.#send(socket, {
         type: "command.result",
         command: command.type,
         requestId: command.requestId,
         ok: false,
-        error: { code, message: error instanceof Error ? error.message : "Command failed" },
+        error: {
+          code: "command_failed",
+          message: error instanceof Error ? error.message : "Command failed",
+        },
       });
     }
   }
@@ -231,7 +232,8 @@ export class Session extends DurableObject<Env> {
             type: "input",
             content: command.content,
             requestId: command.requestId,
-            whenBusy: "reject",
+            // Queue behind a running turn instead of rejecting; the inbox places it after the current answer.
+            whenBusy: "followUp",
           },
           BACKGROUND_CONTEXT,
         );
@@ -296,13 +298,23 @@ export class Session extends DurableObject<Env> {
       conversationId,
       events: [stream.snapshot],
     });
+    await this.#sendInbox(socket, conversationId);
     stream.start(async (events) => {
       if (this.#eventStreams.get(socket) !== stream) return;
       this.#send(socket, { type: "conversation.events", conversationId, events });
+      if (events.some(({ type }) => type === "inbox_update" || type === "snapshot")) {
+        await this.#sendInbox(socket, conversationId);
+      }
     });
     void stream.closed.finally(() => {
       if (this.#eventStreams.get(socket) === stream) this.#eventStreams.delete(socket);
     });
+  }
+
+  /** Inbox events carry only submission IDs; the queued text lives in the conversation's `pi.inbox` document. */
+  async #sendInbox(socket: WebSocket, conversationId: ConversationId): Promise<void> {
+    const inbox = await this.#harness.snapshot(InboxDoc, conversationId, BACKGROUND_CONTEXT);
+    this.#send(socket, { type: "conversation.inbox", conversationId, items: queuedInputs(inbox) });
   }
 
   async #stopEventStream(socket: WebSocket): Promise<void> {
