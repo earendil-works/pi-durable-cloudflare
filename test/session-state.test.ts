@@ -53,6 +53,7 @@ describe("session event reducer", () => {
             run: { inputs: [3] },
             generation: { attempt: 1, message: assistant("Hel") },
             tools: [],
+            compactions: [],
             inbox: [],
             config: { thinkingLevel: "off", activeTools: [] },
             usage: { models: {}, tools: {} },
@@ -146,6 +147,7 @@ describe("session event reducer", () => {
               },
             ],
             tools: [],
+            compactions: [],
             inbox: [],
             config: { thinkingLevel: "off", activeTools: ["schedule"] },
             usage: { models: {}, tools: {} },
@@ -166,6 +168,148 @@ describe("session event reducer", () => {
         canFork: false,
       }),
     ]);
+  });
+
+  it("labels compaction and reset entries and strips the summary wrapper", () => {
+    const state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "conversation.events",
+        conversationId: 1,
+        events: [
+          {
+            type: "snapshot",
+            entries: [
+              {
+                id: 5,
+                conversationId: 1,
+                kind: "pi.compaction",
+                head: 3,
+                model: [
+                  {
+                    role: "user",
+                    content: [
+                      {
+                        type: "text",
+                        text: "The conversation history before this point was compacted into the following summary:\n\n<summary>\nUser asked about weather.\n</summary>",
+                      },
+                    ],
+                    timestamp: 1,
+                  },
+                ],
+                data: { reason: "threshold" },
+              },
+              { id: 6, conversationId: 1, kind: "pi.reset", head: 6 },
+              {
+                id: 7,
+                conversationId: 1,
+                kind: "pi.reset",
+                head: 7,
+                model: [{ role: "user", content: "Continue from the handoff.", timestamp: 2 }],
+              },
+            ],
+            tools: [],
+            compactions: [],
+            inbox: [],
+            config: { thinkingLevel: "off", activeTools: [] },
+            usage: { models: {}, tools: {} },
+          },
+        ],
+      }),
+    });
+
+    expect(state.snapshots[1]?.entries).toEqual([
+      expect.objectContaining({
+        role: "compaction",
+        text: "User asked about weather.",
+        canFork: false,
+      }),
+      expect.objectContaining({ role: "reset", text: "Context reset", canFork: false }),
+      expect.objectContaining({
+        role: "reset",
+        text: "Continue from the handoff.",
+        canFork: false,
+      }),
+    ]);
+  });
+
+  it("omits the rendered diagnostics block from tool result text", () => {
+    const diagnostics = [{ severity: "warn", code: "truncated", message: "Output truncated" }];
+    const state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "conversation.events",
+        conversationId: 1,
+        events: [
+          {
+            type: "entry_appended",
+            entry: {
+              id: 4,
+              conversationId: 1,
+              kind: "pi.tool-result",
+              model: [
+                {
+                  role: "toolResult",
+                  toolCallId: "call-1",
+                  toolName: "get_weather",
+                  content: [
+                    { type: "text", text: "Sunny" },
+                    { type: "text", text: "<harness>\n[warn] Output truncated\n</harness>" },
+                  ],
+                  isError: false,
+                  timestamp: 1,
+                },
+              ],
+              data: { diagnostics },
+            },
+          },
+        ],
+      }),
+    });
+
+    expect(state.snapshots[1]?.entries).toEqual([
+      expect.objectContaining({ role: "tool", text: "Sunny", diagnostics }),
+    ]);
+  });
+
+  it("tracks live compactions from snapshots and events", () => {
+    let state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "conversation.events",
+        conversationId: 1,
+        events: [
+          {
+            type: "snapshot",
+            entries: [],
+            tools: [],
+            compactions: [{ taskId: 8, reason: "threshold", blocking: false, attempt: 1 }],
+            inbox: [],
+            config: { thinkingLevel: "off", activeTools: [] },
+            usage: { models: {}, tools: {} },
+          },
+          { type: "compaction_start", taskId: 9, reason: "overflow", blocking: true },
+        ],
+      }),
+    });
+
+    expect(state.snapshots[1]?.compactions).toEqual([
+      { taskId: 8, reason: "threshold", blocking: false },
+      { taskId: 9, reason: "overflow", blocking: true },
+    ]);
+
+    state = sessionReducer(state, {
+      type: "event",
+      event: event({
+        type: "conversation.events",
+        conversationId: 1,
+        events: [
+          { type: "compaction_end", taskId: 8, reason: "threshold" },
+          { type: "compaction_end", taskId: 9, reason: "overflow" },
+        ],
+      }),
+    });
+    expect(state.snapshots[1]?.compactions).toEqual([]);
   });
 
   it("does not change the selected conversation for prompt acknowledgements", () => {
@@ -275,6 +419,7 @@ describe("session event reducer", () => {
             type: "snapshot",
             entries: [],
             tools: [],
+            compactions: [],
             inbox: [],
             config: { thinkingLevel: "off", activeTools: [] },
             usage: { models: {}, tools: {} },

@@ -2,6 +2,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type {
   AgentEvent,
+  CompactionReason,
   ConversationConfigState,
   EntryRecord,
   JsonObject,
@@ -10,6 +11,7 @@ import type {
   ToolDiagnostic,
   UsageState,
 } from "@earendil-works/pi-durable";
+import { CompactionEntry, ResetEntry, ToolResultEntry } from "@earendil-works/pi-durable";
 import {
   ROOT_CONVERSATION_ID,
   parseScheduledInstruction,
@@ -22,10 +24,19 @@ export interface TranscriptEntry {
   readonly id: number;
   readonly conversationId: number;
   readonly kind: string;
-  readonly role: "user" | "assistant" | "system" | "tool" | "scheduled" | "event";
+  readonly role:
+    | "user"
+    | "assistant"
+    | "system"
+    | "tool"
+    | "scheduled"
+    | "compaction"
+    | "reset"
+    | "event";
   readonly text: string;
   readonly timestamp?: number;
   readonly canFork: boolean;
+  readonly diagnostics?: readonly ToolDiagnostic[];
 }
 
 export interface LiveConversation {
@@ -47,12 +58,19 @@ export interface ToolProgress {
   readonly diagnostics?: readonly ToolDiagnostic[];
 }
 
+export interface LiveCompaction {
+  readonly taskId: number;
+  readonly reason: CompactionReason;
+  readonly blocking: boolean;
+}
+
 export interface ConversationSnapshot {
   readonly id: number;
   readonly entries: readonly TranscriptEntry[];
   readonly partial?: AssistantMessage;
   readonly live: LiveConversation | null;
   readonly tools: readonly ToolProgress[];
+  readonly compactions: readonly LiveCompaction[];
   readonly config?: Readonly<ConversationConfigState>;
   readonly usage?: Readonly<UsageState>;
   readonly failure?: {
@@ -133,6 +151,7 @@ const emptyConversation = (id: number): ConversationSnapshot => ({
   entries: [],
   live: null,
   tools: [],
+  compactions: [],
 });
 
 function reduceAgentEvent(
@@ -214,6 +233,21 @@ function reduceAgentEvent(
           message: event.message,
         },
       };
+    case "compaction_start":
+      return conversation.compactions.some(({ taskId }) => taskId === event.taskId)
+        ? conversation
+        : {
+            ...conversation,
+            compactions: [
+              ...conversation.compactions,
+              { taskId: event.taskId, reason: event.reason, blocking: event.blocking },
+            ],
+          };
+    case "compaction_end":
+      return {
+        ...conversation,
+        compactions: conversation.compactions.filter(({ taskId }) => taskId !== event.taskId),
+      };
     default:
       return conversation;
   }
@@ -232,6 +266,11 @@ function snapshotConversation(id: number, event: SnapshotEvent): ConversationSna
       ...(tool.output === undefined ? {} : { output: tool.output }),
       ...(tool.details === undefined ? {} : { details: tool.details }),
       ...(tool.diagnostics === undefined ? {} : { diagnostics: tool.diagnostics }),
+    })),
+    compactions: event.compactions.map(({ taskId, reason, blocking }) => ({
+      taskId,
+      reason,
+      blocking,
     })),
     config: event.config,
     usage: event.usage,
@@ -418,21 +457,65 @@ function setMutableValue(target: MutableContainer, segment: string | number, val
 
 function transcriptEntry(entry: EntryRecord): TranscriptEntry {
   const first = entry.model?.[0];
+  const base = {
+    id: entry.id,
+    conversationId: entry.conversationId,
+    kind: entry.kind,
+    ...(first === undefined ? {} : { timestamp: first.timestamp }),
+    canFork: false,
+  };
+  if (CompactionEntry.is(entry)) {
+    const text = first === undefined ? "" : messageText(first);
+    return { ...base, role: "compaction", text: compactionSummary(text) };
+  }
+  if (ResetEntry.is(entry)) {
+    const text = first === undefined ? "" : messageText(first);
+    return { ...base, role: "reset", text: text || "Context reset" };
+  }
+  if (ToolResultEntry.is(entry) && first?.role === "toolResult") {
+    const diagnostics = toolResultDiagnostics(entry.data);
+    return {
+      ...base,
+      role: "tool",
+      text: toolResultText(first.content, diagnostics.length > 0),
+      ...(diagnostics.length === 0 ? {} : { diagnostics }),
+    };
+  }
   const rawText =
     entry.model?.map(messageText).filter(Boolean).join("\n\n") ||
     (entry.data === undefined ? entry.kind : JSON.stringify(entry.data));
   const scheduled = first?.role === "user" ? parseScheduledInstruction(rawText) : undefined;
   const role = scheduled === undefined ? messageRole(first) : "scheduled";
   const text = scheduled ?? rawText;
-  return {
-    id: entry.id,
-    conversationId: entry.conversationId,
-    kind: entry.kind,
-    role,
-    text,
-    ...(first === undefined ? {} : { timestamp: first.timestamp }),
-    canFork: role === "user" || role === "assistant",
-  };
+  return { ...base, role, text, canFork: role === "user" || role === "assistant" };
+}
+
+/** Compaction entries wrap the summary in the Harness's fixed `<summary>` framing. */
+function compactionSummary(text: string): string {
+  const match = /<summary>\n([\s\S]*)\n<\/summary>$/.exec(text);
+  return match?.[1] ?? text;
+}
+
+/** Tool result content ends with a rendered `<harness>` block whenever the entry carries diagnostics. */
+function toolResultText(content: readonly unknown[], hasDiagnostics: boolean): string {
+  const parts = hasDiagnostics ? content.slice(0, -1) : content;
+  return contentText(parts);
+}
+
+function toolResultDiagnostics(data: EntryRecord["data"]): readonly ToolDiagnostic[] {
+  if (!isRecord(data) || !Array.isArray(data.diagnostics)) return [];
+  return data.diagnostics.filter(isToolDiagnostic);
+}
+
+const DIAGNOSTIC_SEVERITIES: ReadonlySet<unknown> = new Set(["info", "warn", "error"]);
+
+function isToolDiagnostic(value: unknown): value is ToolDiagnostic {
+  return (
+    isRecord(value) &&
+    DIAGNOSTIC_SEVERITIES.has(value.severity) &&
+    typeof value.message === "string" &&
+    (value.code === undefined || typeof value.code === "string")
+  );
 }
 
 function messageRole(message: Message | undefined): TranscriptEntry["role"] {

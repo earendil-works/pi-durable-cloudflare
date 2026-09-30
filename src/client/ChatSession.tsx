@@ -1,5 +1,14 @@
-import { type FormEvent, Fragment, useState } from "react";
+import {
+  type FormEvent,
+  Fragment,
+  type MouseEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { ROOT_CONVERSATION_ID } from "../protocol.ts";
+import type { ToolDiagnostic } from "@earendil-works/pi-durable";
 import type { ConversationSnapshot, ToolProgress, TranscriptEntry } from "./session-state.ts";
 import { usePiSession } from "./usePiSession.ts";
 
@@ -12,7 +21,7 @@ const conversationLabel = (
   parent: { readonly conversationId: number; readonly at: number } | undefined,
 ): string => {
   if (id === ROOT_CONVERSATION_ID) return "Main conversation";
-  if (parent !== undefined) return `Fork ${id} from message ${parent.at}`;
+  if (parent !== undefined) return `Fork (id: ${id}, from: ${parent.at})`;
   return `Conversation ${id}`;
 };
 
@@ -22,13 +31,49 @@ const statusLabel = {
   failed: "Connection failed",
 } as const;
 
+const conversationIdFromLocation = (): number | undefined => {
+  const value = new URLSearchParams(window.location.search).get("conversation");
+  if (value === null || !/^\d+$/.test(value)) return undefined;
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+};
+
 export function ChatSession({ sessionId }: ChatSessionProps) {
-  const session = usePiSession(sessionId);
+  const initialConversationId = useRef(conversationIdFromLocation()).current;
+  const session = usePiSession(sessionId, initialConversationId);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const transcriptRef = useRef<HTMLElement | null>(null);
+  const pinToLatestRef = useRef(true);
+  const renderedConversationRef = useRef<number | undefined>(undefined);
   const activeSummary = session.conversations.find(({ id }) => id === session.activeConversationId);
   const activeConversationId = session.activeConversationId;
   const busy = session.activeConversation?.live?.active ?? false;
+
+  useLayoutEffect(() => {
+    const transcript = transcriptRef.current;
+    if (transcript === null) return;
+
+    if (renderedConversationRef.current !== activeConversationId) {
+      renderedConversationRef.current = activeConversationId;
+      pinToLatestRef.current = true;
+    }
+    if (pinToLatestRef.current) transcript.scrollTop = transcript.scrollHeight;
+  });
+
+  useEffect(() => {
+    const openLinkedConversation = (): void => {
+      const conversationId = conversationIdFromLocation() ?? ROOT_CONVERSATION_ID;
+      if (
+        conversationId !== session.activeConversationId &&
+        session.conversations.some(({ id }) => id === conversationId)
+      ) {
+        session.openConversation(conversationId);
+      }
+    };
+    window.addEventListener("popstate", openLinkedConversation);
+    return () => window.removeEventListener("popstate", openLinkedConversation);
+  }, [session.activeConversationId, session.conversations, session.openConversation]);
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -43,70 +88,111 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
     }
   };
 
+  const trackTranscriptPosition = (): void => {
+    const transcript = transcriptRef.current;
+    if (transcript === null) return;
+    const distanceFromLatest =
+      transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
+    pinToLatestRef.current = distanceFromLatest <= 48;
+  };
+
+  const followConversationLink = (
+    event: MouseEvent<HTMLAnchorElement>,
+    conversationId: number,
+  ): void => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    if (conversationId !== session.activeConversationId) {
+      window.history.pushState(null, "", event.currentTarget.href);
+      session.openConversation(conversationId);
+    }
+  };
+
   return (
-    <>
-      <header>
-        <a href="/">pi-durable</a>
-        <h1>Session</h1>
-        <p>
-          <output aria-live="polite">{statusLabel[session.status]}</output>
-        </p>
-      </header>
+    <div className="session-workspace">
+      <aside className="session-sidebar">
+        <header className="session-header">
+          <a className="product-link" href="/">
+            pi-durable
+          </a>
+          <h1>Session</h1>
+          <p className="connection-status">
+            <output aria-live="polite">{statusLabel[session.status]}</output>
+          </p>
+        </header>
 
-      {session.error === undefined ? null : <p role="alert">{session.error}</p>}
+        {session.error === undefined ? null : (
+          <p className="session-error" role="alert">
+            {session.error}
+          </p>
+        )}
 
-      <aside>
-        <nav aria-labelledby="conversations-heading">
-          <h2 id="conversations-heading">Conversations</h2>
-          <button
-            type="button"
-            onClick={session.createConversation}
-            disabled={session.status !== "connected"}
-          >
-            New conversation
-          </button>
-          {session.conversations.length === 0 ? (
-            <p>No conversations are available yet.</p>
-          ) : (
-            <ul>
-              {session.conversations.map((conversation) => (
-                <li key={conversation.id}>
-                  <button
-                    type="button"
-                    aria-pressed={conversation.id === session.activeConversationId}
-                    onClick={() => session.openConversation(conversation.id)}
-                  >
-                    {conversationLabel(conversation.id, conversation.parent)}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+        <nav className="conversation-navigation" aria-labelledby="conversations-heading">
+          <div className="conversation-navigation-header">
+            <h2 id="conversations-heading">Conversations</h2>
+            <button
+              type="button"
+              onClick={session.createConversation}
+              disabled={session.status !== "connected"}
+            >
+              New conversation
+            </button>
+          </div>
+          <div className="conversation-list" tabIndex={0}>
+            {session.conversations.length === 0 ? (
+              <p className="conversation-list-empty">No conversations yet.</p>
+            ) : (
+              <ul>
+                {session.conversations.map((conversation) => (
+                  <li key={conversation.id}>
+                    <a
+                      href={`?conversation=${conversation.id}`}
+                      aria-current={
+                        conversation.id === session.activeConversationId ? "page" : undefined
+                      }
+                      onClick={(event) => followConversationLink(event, conversation.id)}
+                    >
+                      {conversationLabel(conversation.id, conversation.parent)}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </nav>
       </aside>
 
-      <main>
-        <section aria-labelledby="transcript-heading">
+      <main className="conversation-view">
+        <header className="conversation-header">
           <h2 id="transcript-heading">
             {activeSummary === undefined
-              ? "Transcript"
+              ? "Conversation"
               : conversationLabel(activeSummary.id, activeSummary.parent)}
           </h2>
-
           {session.activeConversation === undefined ? null : (
             <ConversationDetails conversation={session.activeConversation} />
           )}
+        </header>
 
+        <section
+          ref={transcriptRef}
+          className="transcript"
+          aria-labelledby="transcript-heading"
+          tabIndex={0}
+          onScroll={trackTranscriptPosition}
+        >
           {session.activeConversation === undefined ? (
-            <p>Loading conversation…</p>
+            <p className="transcript-empty">Loading conversation…</p>
           ) : session.activeConversation.entries.length === 0 &&
             session.activeConversation.live === null ? (
-            <p>
+            <p className="transcript-empty">
               This conversation is empty. Send a message to begin. You can fork the conversation
               from any committed user or assistant message.
             </p>
           ) : (
-            <ol>
+            <ol className="transcript-list">
               {session.activeConversation.entries.map((entry) => (
                 <li key={entry.id}>
                   <TranscriptMessage
@@ -124,12 +210,15 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
 
           {session.activeConversation?.live === null ||
           session.activeConversation?.live === undefined ? null : (
-            <article aria-busy={session.activeConversation.live.active}>
+            <article
+              className="transcript-message transcript-message--assistant transcript-message--live"
+              aria-busy={session.activeConversation.live.active}
+            >
               <header>
                 <strong>Assistant</strong>
               </header>
               {session.activeConversation.live.text.length === 0 ? (
-                <p>Responding…</p>
+                <p className="responding">Responding…</p>
               ) : (
                 <MessageText text={session.activeConversation.live.text} />
               )}
@@ -144,21 +233,31 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             <ToolActivity tools={session.activeConversation.tools} />
           )}
 
+          {session.activeConversation === undefined ||
+          session.activeConversation.compactions.length === 0 ? null : (
+            <p className="compaction-status" role="status">
+              {compactionStatusText(session.activeConversation.compactions)}
+            </p>
+          )}
+
           {session.activeConversation?.failure === undefined ? null : (
-            <p role="alert">
+            <p className="transcript-error" role="alert">
               {session.activeConversation.failure.kind} failed:{" "}
               {session.activeConversation.failure.message}
             </p>
           )}
         </section>
 
-        <form onSubmit={submit}>
-          <label htmlFor="prompt">Message</label>
+        <form className="prompt-bar" onSubmit={submit}>
+          <label className="visually-hidden" htmlFor="prompt">
+            Message
+          </label>
           <textarea
             id="prompt"
             name="prompt"
-            rows={4}
+            rows={3}
             value={draft}
+            placeholder="Send a message…"
             onChange={(event) => setDraft(event.currentTarget.value)}
             disabled={session.status !== "connected" || session.activeConversationId === undefined}
           />
@@ -172,48 +271,56 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
               draft.trim().length === 0
             }
           >
-            Send
+            {submitting ? "Sending…" : "Send"}
           </button>
         </form>
       </main>
-    </>
+    </div>
   );
 }
 
 function ConversationDetails({ conversation }: { readonly conversation: ConversationSnapshot }) {
   const config = conversation.config;
-  const usage = conversation.usage;
-  const totals = usageTotals(usage);
+  const totals = usageTotals(conversation.usage);
+  const model =
+    config?.model === undefined
+      ? "Provider default"
+      : `${config.model.provider}/${config.model.modelId}`;
+  const tools =
+    config === undefined || config.activeTools.length === 0
+      ? "None"
+      : config.activeTools.join(", ");
+
   return (
-    <section aria-labelledby="conversation-details-heading">
-      <h3 id="conversation-details-heading">Runtime</h3>
+    <section className="runtime-information" aria-label="Runtime information">
       <dl>
-        <dt>Model</dt>
-        <dd>
-          {config?.model === undefined
-            ? "Provider default"
-            : `${config.model.provider}/${config.model.modelId}`}
-        </dd>
-        <dt>Thinking</dt>
-        <dd>{config?.thinkingLevel ?? "off"}</dd>
-        <dt>Tools</dt>
-        <dd>
-          {config === undefined || config.activeTools.length === 0
-            ? "None"
-            : config.activeTools.join(", ")}
-        </dd>
-        <dt>Tokens</dt>
-        <dd>{totals.tokens.toLocaleString()}</dd>
-        <dt>Cost</dt>
-        <dd>{formatCost(totals.cost)}</dd>
+        <div className="runtime-primary">
+          <RuntimeDatum label="Model" value={model} />
+          <RuntimeDatum label="Thinking" value={config?.thinkingLevel ?? "off"} />
+          <RuntimeDatum label="Tokens" value={totals.tokens.toLocaleString()} />
+          <RuntimeDatum label="Cost" value={formatCost(totals.cost)} />
+        </div>
+        <div className="runtime-tools">
+          <dt>Tools:</dt>
+          <dd>{tools}</dd>
+        </div>
       </dl>
     </section>
   );
 }
 
+function RuntimeDatum({ label, value }: { readonly label: string; readonly value: string }) {
+  return (
+    <div>
+      <dt>{label}:</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
 function ToolActivity({ tools }: { readonly tools: readonly ToolProgress[] }) {
   return (
-    <section aria-labelledby="tool-activity-heading">
+    <section className="tool-activity" aria-labelledby="tool-activity-heading">
       <h3 id="tool-activity-heading">Tool activity</h3>
       <ol>
         {tools.map((tool) => (
@@ -238,13 +345,7 @@ function ToolActivity({ tools }: { readonly tools: readonly ToolProgress[] }) {
                 </details>
               )}
               {tool.diagnostics === undefined || tool.diagnostics.length === 0 ? null : (
-                <ul>
-                  {tool.diagnostics.map((diagnostic, index) => (
-                    <li key={`${diagnostic.code ?? "diagnostic"}-${index}`}>
-                      <strong>{capitalize(diagnostic.severity)}</strong>: {diagnostic.message}
-                    </li>
-                  ))}
-                </ul>
+                <Diagnostics diagnostics={tool.diagnostics} />
               )}
             </article>
           </li>
@@ -275,6 +376,23 @@ const costFormatter = new Intl.NumberFormat(undefined, {
 
 const formatCost = (cost: number): string => costFormatter.format(cost);
 
+function compactionStatusText(compactions: ConversationSnapshot["compactions"]): string {
+  return compactions.some(({ blocking }) => blocking)
+    ? "Compacting context before responding…"
+    : "Compacting context in the background…";
+}
+
+const roleLabel: Record<TranscriptEntry["role"], string> = {
+  user: "User",
+  assistant: "Assistant",
+  system: "System",
+  tool: "Tool",
+  scheduled: "Scheduled",
+  compaction: "Context summary",
+  reset: "Context reset",
+  event: "Event",
+};
+
 function TranscriptMessage({
   entry,
   onFork,
@@ -283,12 +401,11 @@ function TranscriptMessage({
   readonly onFork?: () => void;
 }) {
   return (
-    <article>
+    <article className={`transcript-message transcript-message--${entry.role}`}>
       <header>
-        <strong>{entry.role === "tool" ? "Tool" : capitalize(entry.role)}</strong>
+        <strong>{roleLabel[entry.role]}</strong>
         {entry.timestamp === undefined ? null : (
           <Fragment>
-            {" "}
             <time dateTime={new Date(entry.timestamp).toISOString()}>
               {new Date(entry.timestamp).toLocaleString()}
             </time>
@@ -296,14 +413,27 @@ function TranscriptMessage({
         )}
       </header>
       <MessageText text={entry.text} />
+      {entry.diagnostics === undefined ? null : <Diagnostics diagnostics={entry.diagnostics} />}
       {!entry.canFork || onFork === undefined ? null : (
         <footer>
-          <button type="button" onClick={onFork}>
+          <button className="text-button" type="button" onClick={onFork}>
             Fork from here
           </button>
         </footer>
       )}
     </article>
+  );
+}
+
+function Diagnostics({ diagnostics }: { readonly diagnostics: readonly ToolDiagnostic[] }) {
+  return (
+    <ul>
+      {diagnostics.map((diagnostic, index) => (
+        <li key={`${diagnostic.code ?? "diagnostic"}-${index}`}>
+          <strong>{capitalize(diagnostic.severity)}</strong>: {diagnostic.message}
+        </li>
+      ))}
+    </ul>
   );
 }
 

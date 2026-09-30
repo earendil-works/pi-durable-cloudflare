@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import {
   parseServerEventEnvelope,
+  ROOT_CONVERSATION_ID,
   type ClientCommand,
   type ConnectionStatus,
   type ConversationSummary,
@@ -33,13 +34,14 @@ export interface PiSession {
   submitPrompt(conversationId: number, content: string): Promise<boolean>;
 }
 
-export function usePiSession(sessionId: string): PiSession {
+export function usePiSession(sessionId: string, initialConversationId?: number): PiSession {
   const [state, dispatch] = useReducer(sessionReducer, initialSessionState);
   const socketRef = useRef<WebSocket | null>(null);
   const pendingPromptRef = useRef<PendingPrompt | null>(null);
 
   useEffect(() => {
     let disposed = false;
+    let initialConversationOpened = false;
     let failureMessage = "Connection closed. Reload this page to continue.";
     const socket = new WebSocket(socketUrl(sessionId));
     socketRef.current = socket;
@@ -65,6 +67,23 @@ export function usePiSession(sessionId: string): PiSession {
       }
 
       dispatch({ type: "event", event: parsed });
+      if (parsed.type === "session.snapshot" && !initialConversationOpened) {
+        initialConversationOpened = true;
+        if (
+          initialConversationId !== undefined &&
+          initialConversationId !== ROOT_CONVERSATION_ID &&
+          parsed.session.conversations.some(({ id }) => id === initialConversationId)
+        ) {
+          dispatch({ type: "select", conversationId: initialConversationId });
+          socket.send(
+            JSON.stringify({
+              type: "conversation.open",
+              requestId: crypto.randomUUID(),
+              conversationId: initialConversationId,
+            } satisfies ClientCommand),
+          );
+        }
+      }
       if (parsed.type === "command.result" && parsed.command === "prompt.submit") {
         const pending = pendingPromptRef.current;
         if (pending?.requestId === parsed.requestId) {
@@ -94,7 +113,7 @@ export function usePiSession(sessionId: string): PiSession {
       socket.close(1000, "Session view closed");
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [sessionId]);
+  }, [initialConversationId, sessionId]);
 
   const send = useCallback((command: ClientCommand): boolean => {
     const socket = socketRef.current;
