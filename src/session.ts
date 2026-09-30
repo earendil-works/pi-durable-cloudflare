@@ -280,7 +280,11 @@ export class Session extends DurableObject<Env> {
       let cursor: Cursor | undefined;
       do {
         const page = await tx.scanConversations({}, CONVERSATION_PAGE_SIZE, cursor);
-        conversations.push(...page.items.map(conversationSummary));
+        // Owned conversations, such as recall's subagents, belong to their tool call, not the list.
+        for (const conversation of page.items) {
+          if (conversation.owner === undefined)
+            conversations.push(conversationSummary(conversation));
+        }
         cursor = page.next;
       } while (cursor !== undefined);
       return conversations;

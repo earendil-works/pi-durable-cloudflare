@@ -12,6 +12,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { DeliverScheduledInstruction } from "./schedule.ts";
+import { RECALL_TOOL_NAME, recallTool, searchConversationsTool } from "./recall.ts";
 import { createScheduleTool, getWeatherTool, SCHEDULE_TOOL_NAME } from "./tools.ts";
 
 const models = createModels();
@@ -26,6 +27,9 @@ function createChatRegistry(options: ChatHarnessOptions) {
   registry.tasks.add(DeliverScheduledInstruction);
   registry.tools.add(getWeatherTool);
   registry.tools.add(createScheduleTool(options.scheduleCreated));
+  registry.tools.add(recallTool);
+  // Registered for recall's child conversations; not in any default loadout.
+  registry.tools.add(searchConversationsTool);
   registry.systemPrompt.section("preamble", () => "You are a concise assistant.", { tag: false });
   registry.systemPrompt.section(
     "clock",
@@ -39,7 +43,7 @@ function createChatRegistry(options: ChatHarnessOptions) {
 export const DEFAULT_CONVERSATION_CONFIG = {
   model: { provider: "openai", modelId: "gpt-6-luna" },
   thinkingLevel: "off",
-  activeTools: [getWeatherTool.name, SCHEDULE_TOOL_NAME],
+  activeTools: [getWeatherTool.name, SCHEDULE_TOOL_NAME, RECALL_TOOL_NAME],
 } satisfies ConversationConfigState;
 
 export async function initializeConversation(

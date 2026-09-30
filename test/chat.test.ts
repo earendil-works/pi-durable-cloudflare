@@ -6,6 +6,7 @@ import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { describe, expect, it } from "vitest";
 import { openChatHarness } from "../src/chat.ts";
 import { MAX_CLIENT_FRAME_CHARACTERS } from "../src/protocol.ts";
+import { DeliverScheduledInstruction } from "../src/schedule.ts";
 import { createCloudflareSqliteDatabase } from "../src/sqlite.ts";
 
 const jsonMessages = (socket: WebSocket) => {
@@ -108,7 +109,7 @@ describe("chat application", () => {
         {
           type: "snapshot",
           entries: [],
-          config: { activeTools: ["get_weather", "schedule"] },
+          config: { activeTools: ["get_weather", "schedule", "recall"] },
         },
       ],
     });
@@ -275,6 +276,48 @@ describe("chat application", () => {
       parent: { conversationId: 1, at: entryId },
     });
     expect(receivedForkSnapshot).toBe(true);
+    socket.close(1000, "test complete");
+  });
+
+  it("lists only ownerless conversations", async () => {
+    const sessionId = "owned-conversations-hidden";
+    await runInDurableObject(env.SESSIONS.getByName(sessionId), async (_instance, state) => {
+      const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
+      const harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
+        scheduleCreated: async () => {},
+      });
+      try {
+        const root = await harness.root(BACKGROUND_CONTEXT);
+        // A task-owned conversation, as recall creates for its subagent.
+        await root.commit(async (tx) => {
+          const task = await tx.createTask(
+            DeliverScheduledInstruction,
+            {
+              id: "schedule:owner",
+              conversationId: root.id,
+              instruction: "Owner only",
+              runAt: Date.now() + 3_600_000,
+            },
+            { ownership: { kind: "conversation" }, background: true },
+          );
+          await tx.createConversation({ ownership: { kind: "task", taskId: task } });
+        }, BACKGROUND_CONTEXT);
+      } finally {
+        await harness.close(BACKGROUND_CONTEXT);
+      }
+    });
+
+    const response = await exports.default.fetch(
+      `https://example.com/api/sessions/${sessionId}/connect`,
+      { headers: { Upgrade: "websocket" } },
+    );
+    const socket = response.webSocket!;
+    const messages = jsonMessages(socket);
+    socket.accept();
+    await expect(messages.next()).resolves.toEqual({
+      type: "session.snapshot",
+      session: { conversations: [{ id: 1 }] },
+    });
     socket.close(1000, "test complete");
   });
 });
