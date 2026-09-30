@@ -17,10 +17,10 @@ interface ChatSessionProps {
 }
 
 const conversationLabel = ({ id, parent, owner }: ConversationSummary): string => {
-  if (id === ROOT_CONVERSATION_ID) return "Main conversation";
+  if (id === ROOT_CONVERSATION_ID) return `Main conversation (id: ${id})`;
   if (owner !== undefined) return `Subagent (id: ${id}, owner: ${owner.conversationId})`;
   if (parent !== undefined) return `Fork (id: ${id}, from: ${parent.at})`;
-  return `Conversation ${id}`;
+  return `Conversation (id: ${id})`;
 };
 
 const statusLabel = {
