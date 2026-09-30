@@ -52,17 +52,20 @@ function match(entry: EntryRecord, term: string): ConversationMatch | undefined 
 }
 
 /**
- * Case-insensitive substring search over the user and assistant messages of ownerless conversations, the ones the UI
- * lists. Owned conversations, such as recall's own child, are skipped. Each page is read in its own commit so a scan
- * never holds the Session's commit line for long.
+ * Case-insensitive substring search over the user and assistant messages of ownerless conversations. Owned
+ * conversations (subagents) are skipped, and so is the conversation that asked: when a recall child searches, its
+ * owner's question and earlier recall answers are not evidence. Each page is read in its own commit so a scan never
+ * holds the Session's commit line for long.
  */
 export async function searchConversations(
-  api: Pick<ToolExecutionApi, "commit">,
+  api: Pick<ToolExecutionApi, "commit" | "conversationId">,
   term: string,
   context: Context,
 ): Promise<{ readonly matches: readonly ConversationMatch[]; readonly truncated: boolean }> {
   const needle = term.trim().toLowerCase();
   if (needle.length === 0) throw new Error("Search term must contain text");
+  const caller = await api.commit((tx) => tx.conversation(api.conversationId), context);
+  const asking = caller?.owner?.conversationId ?? api.conversationId;
   const matches: ConversationMatch[] = [];
   let conversationCursor: Cursor | undefined;
   do {
@@ -71,7 +74,7 @@ export async function searchConversations(
       context,
     );
     for (const conversation of conversations.items) {
-      if (conversation.owner !== undefined) continue;
+      if (conversation.owner !== undefined || conversation.id === asking) continue;
       let entryCursor: Cursor | undefined;
       do {
         const entries = await api.commit(

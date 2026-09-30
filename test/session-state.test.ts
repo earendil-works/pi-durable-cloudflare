@@ -340,6 +340,23 @@ describe("session event reducer", () => {
     expect(state.activeConversationId).toBe(4);
   });
 
+  it("keeps conversation owners in the session snapshot", () => {
+    const state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "session.snapshot",
+        session: { conversations: [{ id: 1 }, { id: 7, owner: { conversationId: 1 } }] },
+      }),
+    });
+    expect(state.conversations).toEqual([{ id: 1 }, { id: 7, owner: { conversationId: 1 } }]);
+    expect(() =>
+      event({
+        type: "session.snapshot",
+        session: { conversations: [{ id: 7, owner: { conversationId: "1" } }] },
+      }),
+    ).toThrow("conversation.owner.conversationId must be a positive integer");
+  });
+
   it("rejects command results without a valid command discriminator", () => {
     expect(() =>
       event({

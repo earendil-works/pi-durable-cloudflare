@@ -279,33 +279,39 @@ describe("chat application", () => {
     socket.close(1000, "test complete");
   });
 
-  it("lists only ownerless conversations", async () => {
-    const sessionId = "owned-conversations-hidden";
-    await runInDurableObject(env.SESSIONS.getByName(sessionId), async (_instance, state) => {
-      const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
-      const harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
-        scheduleCreated: async () => {},
-      });
-      try {
-        const root = await harness.root(BACKGROUND_CONTEXT);
-        // A task-owned conversation, as recall creates for its subagent.
-        await root.commit(async (tx) => {
-          const task = await tx.createTask(
-            DeliverScheduledInstruction,
-            {
-              id: "schedule:owner",
-              conversationId: root.id,
-              instruction: "Owner only",
-              runAt: Date.now() + 3_600_000,
-            },
-            { ownership: { kind: "conversation" }, background: true },
-          );
-          await tx.createConversation({ ownership: { kind: "task", taskId: task } });
-        }, BACKGROUND_CONTEXT);
-      } finally {
-        await harness.close(BACKGROUND_CONTEXT);
-      }
-    });
+  it("lists subagent conversations with their owner", async () => {
+    const sessionId = "owned-conversations-listed";
+    // A task-owned conversation, as recall creates for its subagent.
+    const childId = await runInDurableObject(
+      env.SESSIONS.getByName(sessionId),
+      async (_instance, state) => {
+        const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
+        const harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
+          scheduleCreated: async () => {},
+        });
+        try {
+          const root = await harness.root(BACKGROUND_CONTEXT);
+          return await root.commit(async (tx) => {
+            const task = await tx.createTask(
+              DeliverScheduledInstruction,
+              {
+                id: "schedule:owner",
+                conversationId: root.id,
+                instruction: "Owner only",
+                runAt: Date.now() + 3_600_000,
+              },
+              { ownership: { kind: "conversation" }, background: true },
+            );
+            const child = await tx.createConversation({
+              ownership: { kind: "task", taskId: task },
+            });
+            return child.id;
+          }, BACKGROUND_CONTEXT);
+        } finally {
+          await harness.close(BACKGROUND_CONTEXT);
+        }
+      },
+    );
 
     const response = await exports.default.fetch(
       `https://example.com/api/sessions/${sessionId}/connect`,
@@ -316,7 +322,7 @@ describe("chat application", () => {
     socket.accept();
     await expect(messages.next()).resolves.toEqual({
       type: "session.snapshot",
-      session: { conversations: [{ id: 1 }] },
+      session: { conversations: [{ id: 1 }, { id: childId, owner: { conversationId: 1 } }] },
     });
     socket.close(1000, "test complete");
   });

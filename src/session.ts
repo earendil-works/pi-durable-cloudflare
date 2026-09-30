@@ -58,6 +58,9 @@ const conversationSummary = (conversation: ConversationRecord): ConversationSumm
           at: conversation.parent.at,
         },
       }),
+  ...(conversation.owner === undefined
+    ? {}
+    : { owner: { conversationId: conversation.owner.conversationId } }),
 });
 
 export class Session extends DurableObject<Env> {
@@ -73,6 +76,19 @@ export class Session extends DurableObject<Env> {
       const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(ctx.storage));
       this.#harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
         scheduleCreated: () => this.#refreshAlarm(),
+      });
+      // Tool calls create subagent conversations outside any socket command; announce them to every open sidebar.
+      this.#harness.subscribeCommits((publication) => {
+        const subagentCreated = publication.changes.some(
+          (change) => change.type === "conversation" && change.value.owner !== undefined,
+        );
+        if (!subagentCreated) return;
+        // Commit listeners must not call Session APIs; read the list after this listener returns.
+        queueMicrotask(() => {
+          this.#broadcastSessionSnapshot().catch((error: unknown) =>
+            reportError("Session snapshot broadcast failed", error),
+          );
+        });
       });
       await this.#restoreEventStreams();
       await this.#refreshAlarm();
@@ -280,11 +296,7 @@ export class Session extends DurableObject<Env> {
       let cursor: Cursor | undefined;
       do {
         const page = await tx.scanConversations({}, CONVERSATION_PAGE_SIZE, cursor);
-        // Owned conversations, such as recall's subagents, belong to their tool call, not the list.
-        for (const conversation of page.items) {
-          if (conversation.owner === undefined)
-            conversations.push(conversationSummary(conversation));
-        }
+        conversations.push(...page.items.map(conversationSummary));
         cursor = page.next;
       } while (cursor !== undefined);
       return conversations;

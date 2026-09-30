@@ -68,6 +68,10 @@ export interface ConversationSummary {
     readonly conversationId: number;
     readonly at: number;
   };
+  /** Set for conversations created by a tool call, such as a recall subagent. */
+  readonly owner?: {
+    readonly conversationId: number;
+  };
 }
 
 export type ClientCommand =
@@ -247,18 +251,29 @@ export function parseServerEventEnvelope(message: string): ServerEvent {
       const conversations = value.session.conversations.map((conversation) => {
         if (!isRecord(conversation)) throw new Error("Conversation summary is invalid");
         const id = requireId(conversation.id, "conversation.id");
-        if (conversation.parent === undefined) return { id };
-        if (!isRecord(conversation.parent)) throw new Error("Conversation parent is invalid");
-        return {
+        const summary: { -readonly [K in keyof ConversationSummary]: ConversationSummary[K] } = {
           id,
-          parent: {
+        };
+        if (conversation.parent !== undefined) {
+          if (!isRecord(conversation.parent)) throw new Error("Conversation parent is invalid");
+          summary.parent = {
             conversationId: requireId(
               conversation.parent.conversationId,
               "conversation.parent.conversationId",
             ),
             at: requireId(conversation.parent.at, "conversation.parent.at"),
-          },
-        };
+          };
+        }
+        if (conversation.owner !== undefined) {
+          if (!isRecord(conversation.owner)) throw new Error("Conversation owner is invalid");
+          summary.owner = {
+            conversationId: requireId(
+              conversation.owner.conversationId,
+              "conversation.owner.conversationId",
+            ),
+          };
+        }
+        return summary;
       });
       return { type: value.type, session: { conversations } };
     }

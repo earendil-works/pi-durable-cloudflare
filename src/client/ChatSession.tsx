@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ROOT_CONVERSATION_ID } from "../protocol.ts";
+import { type ConversationSummary, ROOT_CONVERSATION_ID } from "../protocol.ts";
 import type { ToolDiagnostic } from "@earendil-works/pi-durable";
 import type { ConversationSnapshot, ToolProgress, TranscriptEntry } from "./session-state.ts";
 import { usePiSession } from "./usePiSession.ts";
@@ -16,11 +16,9 @@ interface ChatSessionProps {
   readonly sessionId: string;
 }
 
-const conversationLabel = (
-  id: number,
-  parent: { readonly conversationId: number; readonly at: number } | undefined,
-): string => {
+const conversationLabel = ({ id, parent, owner }: ConversationSummary): string => {
   if (id === ROOT_CONVERSATION_ID) return "Main conversation";
+  if (owner !== undefined) return `Subagent (id: ${id}, from: ${owner.conversationId})`;
   if (parent !== undefined) return `Fork (id: ${id}, from: ${parent.at})`;
   return `Conversation ${id}`;
 };
@@ -153,7 +151,7 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
                       }
                       onClick={(event) => followConversationLink(event, conversation.id)}
                     >
-                      {conversationLabel(conversation.id, conversation.parent)}
+                      {conversationLabel(conversation)}
                     </a>
                   </li>
                 ))}
@@ -166,9 +164,7 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
       <main className="conversation-view">
         <header className="conversation-header">
           <h2 id="transcript-heading">
-            {activeSummary === undefined
-              ? "Conversation"
-              : conversationLabel(activeSummary.id, activeSummary.parent)}
+            {activeSummary === undefined ? "Conversation" : conversationLabel(activeSummary)}
           </h2>
           {session.activeConversation === undefined ? null : (
             <ConversationDetails conversation={session.activeConversation} />
