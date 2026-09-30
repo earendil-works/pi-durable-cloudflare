@@ -18,7 +18,7 @@ interface ChatSessionProps {
 
 const conversationLabel = ({ id, parent, owner }: ConversationSummary): string => {
   if (id === ROOT_CONVERSATION_ID) return "Main conversation";
-  if (owner !== undefined) return `Subagent (id: ${id}, from: ${owner.conversationId})`;
+  if (owner !== undefined) return `Subagent (id: ${id}, owner: ${owner.conversationId})`;
   if (parent !== undefined) return `Fork (id: ${id}, from: ${parent.at})`;
   return `Conversation ${id}`;
 };
