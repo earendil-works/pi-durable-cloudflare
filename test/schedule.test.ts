@@ -52,7 +52,11 @@ describe("scheduled instructions", () => {
         runAt: now - 1,
       };
       const delivery = await root.commit(
-        (tx) => tx.createTask(DeliverScheduledInstruction, scheduled, { background: true }),
+        (tx) =>
+          tx.createTask(DeliverScheduledInstruction, scheduled, {
+            ownership: { kind: "conversation" },
+            background: true,
+          }),
         context,
       );
 
@@ -118,7 +122,11 @@ describe("scheduled instructions", () => {
         recurring: true as const,
       };
       const delivery = await root.commit(
-        (tx) => tx.createTask(DeliverScheduledInstruction, scheduled, { background: true }),
+        (tx) =>
+          tx.createTask(DeliverScheduledInstruction, scheduled, {
+            ownership: { kind: "conversation" },
+            background: true,
+          }),
         context,
       );
 
@@ -172,7 +180,7 @@ describe("scheduled instructions", () => {
           await tx.createTask(
             DeliverScheduledInstruction,
             { id, conversationId: root.id, instruction: id, runAt },
-            { background: true },
+            { ownership: { kind: "conversation" }, background: true },
           );
         }
       }, context);

@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "customConditions": ["source"],
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "lib": ["ES2024"],

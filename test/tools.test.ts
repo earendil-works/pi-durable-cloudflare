@@ -100,7 +100,10 @@ describe("custom tools", () => {
         );
       }
       expect(new Set(inputs.map(({ id }) => id)).size).toBe(2);
-      expect(tasks.map(({ after }) => after)).toEqual([[], []]);
+      expect(tasks.map(({ owner, background }) => ({ owner, background }))).toEqual([
+        { owner: undefined, background: true },
+        { owner: undefined, background: true },
+      ]);
     } finally {
       await harness.close(context);
     }

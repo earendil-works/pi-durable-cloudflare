@@ -160,6 +160,7 @@ export function createScheduleTool(
         const intent = await tx.doc(ScheduleIntent, api.taskId);
         if (intent.scheduled !== undefined) return intent.scheduled;
         await tx.createTask(DeliverScheduledInstruction, scheduled, {
+          ownership: { kind: "conversation" },
           conversationId: api.conversationId,
           background: true,
         });

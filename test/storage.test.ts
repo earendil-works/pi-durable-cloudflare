@@ -142,7 +142,11 @@ describe("Cloudflare Durable Object example", () => {
                 instruction: "Check the oven",
                 runAt: Date.now() + 200,
               },
-              { conversationId: ROOT_CONVERSATION_ID, background: true },
+              {
+                ownership: { kind: "conversation" },
+                conversationId: ROOT_CONVERSATION_ID,
+                background: true,
+              },
             ),
           context,
         );
@@ -213,7 +217,11 @@ describe("Cloudflare Durable Object example", () => {
                 instruction: "This cannot be delivered",
                 runAt: Date.now() - 1,
               },
-              { conversationId: ROOT_CONVERSATION_ID, background: true },
+              {
+                ownership: { kind: "conversation" },
+                conversationId: ROOT_CONVERSATION_ID,
+                background: true,
+              },
             ),
           context,
         );

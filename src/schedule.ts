@@ -101,6 +101,9 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
 /** Deadline of a delivery task that is still waiting, or `undefined` for other tasks. */
 export function scheduledDeadline(task: TaskInspection): number | undefined {
   if (task.record.kind !== DeliverScheduledInstruction.definition.name) return undefined;
+  if (task.record.state.status === "completing" || task.record.state.status === "terminal") {
+    return undefined;
+  }
   if (!isRecord(task.record.input) || !isRecord(task.record.state.checkpoint)) {
     throw new Error(`Scheduled instruction task ${task.record.id} has invalid durable state`);
   }
