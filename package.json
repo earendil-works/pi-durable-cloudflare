@@ -5,26 +5,36 @@
   "type": "module",
   "scripts": {
     "benchmark": "vitest bench --run --config vitest.benchmark.config.ts",
-    "clean": "shx rm -rf .wrangler",
+    "build": "pnpm clean && vite build",
+    "clean": "shx rm -rf .wrangler dist",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "check": "oxfmt --check . && wrangler types --env-file .dev.vars.example --include-runtime false --check && tsc && wrangler deploy --dry-run --outdir .wrangler/dry-run",
-    "dev": "wrangler dev",
+    "check": "oxfmt --check . && wrangler types --env-file .dev.vars.example --include-runtime false --check && tsc && tsc -p tsconfig.client.json && pnpm build && wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "deploy": "pnpm build && wrangler deploy",
+    "dev": "vite",
+    "preview": "vite preview",
     "test": "vitest --run"
   },
   "dependencies": {
     "@earendil-works/chord": "link:../../.herdr/worktrees/pi/dev-log/packages/chord",
     "@earendil-works/pi-ai": "link:../../.herdr/worktrees/pi/dev-log/packages/ai",
-    "@earendil-works/pi-durable": "link:../../.herdr/worktrees/pi/dev-log/packages/durable"
+    "@earendil-works/pi-durable": "link:../../.herdr/worktrees/pi/dev-log/packages/durable",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.62.0",
     "@cloudflare/vitest-plugin": "1.2.3",
-    "@cloudflare/workers-types": "5.20260922.1",
+    "@cloudflare/workers-types": "5.20260928.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
     "oxfmt": "0.70.0",
     "shx": "0.4.0",
     "typescript": "5.9.3",
+    "vite": "^8.3.1",
     "vitest": "4.1.9",
-    "wrangler": "4.136.3"
+    "wrangler": "4.143.0"
   },
   "packageManager": "pnpm@11.15.1"
 }

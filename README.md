@@ -4,20 +4,24 @@ Example of an `@earendil-works/pi-durable` Harness hosted in a Cloudflare Durabl
 
 The platform-independent chat composition in `src/chat.ts` owns the model collection and extension registry. The Durable Object opens SQLite and the Harness inside `blockConcurrencyWhile()`, so event delivery starts only after local initialization completes and eviction reconstructs the Harness over persisted state.
 
-While durable tasks remain unfinished, the Durable Object keeps a recovery alarm armed. The alarm reconstructs and resumes work after eviction without relying on `waitUntil()`, which does not extend Durable Object lifetime.
+The browser demo is a small React application built with Vite and served through Workers Static Assets. Its landing page creates an opaque session URL. The session view uses one WebSocket to display durable transcripts, create independent conversations, and fork a conversation at a committed user or assistant entry. New UI conversations use the server-selected `gpt-6-luna` model.
 
-The temporary HTTP surface exposes one root conversation per named session:
+The application registry includes two custom tools, both active for new conversations. `get_weather` is based on Cloudflare's voice-agent example and returns randomized mock Fahrenheit weather. `schedule` accepts an instruction and either a relative `delaySeconds` or an absolute ISO 8601 `at`, immediately creates a durable Harness task, and delivers the instruction to the same conversation as a self-contained input when it is due. The conversation then carries it out with its normal tools. A delivery may schedule again only for the next occurrence of an explicitly recurring instruction.
 
-> [!WARNING]
-> This demo HTTP surface intentionally has no authentication. Do not expose it publicly with a production API key without adding access control and rate limiting.
+Per-conversation updates use pi-durable's experimental `watchEvents()` API. Each watch starts with an atomic snapshot and then sends semantic event batches for committed transcript and streaming changes. The browser reduces those events into application-owned React state; pi-durable does not generate the UI. A small custom session-wide snapshot remains for the conversation sidebar because `watchEvents()` is conversation-scoped. WebSocket attachments retain the selected conversation so its watch can be reconstructed after Durable Object hibernation. A closed browser connection is terminal; reload the session page to reconnect and reconstruct its durable state.
+
+The Durable Object projects the earliest delayed-task deadline onto its single platform alarm and also uses that alarm for Harness recovery. When Cloudflare wakes or reconstructs the object, `Harness.resume()` continues each task from its durable checkpoint. Scheduled delivery uses stable request IDs and does not rely on `waitUntil()`, which does not extend Durable Object lifetime.
+
+The browser surface uses:
 
 ```text
-GET /session/<id>  read the root conversation's configuration
-PUT /session/<id>  create the root if needed and replace its configuration
-POST /session/<id>/prompt  submit a text turn and wait for its durable result
+POST /api/sessions                         create an opaque session URL
+GET  /api/sessions/<id>/connect            upgrade to the session WebSocket
+GET  /sessions/<id>                        load the React session view
 ```
 
-`PUT` accepts the built-in `ConversationConfigState`, including `model`, `thinkingLevel`, `activeTools`, `streamOptions`, and `retry`. Omit an optional field to clear it. Active tool names must exist in the application registry.
+> [!WARNING]
+> This demo intentionally has no authentication. Do not expose it publicly with a production API key without adding access control and rate limiting.
 
 The application registry includes OpenAI models. For local development, copy the example environment file and set the key in `.dev.vars`:
 
@@ -30,18 +34,6 @@ For a deployed Worker, store the key as a secret:
 ```sh
 pnpm exec wrangler secret put OPENAI_API_KEY
 ```
-
-`POST` accepts an input submission with text content. `requestId` is optional but recommended because retries with the same ID reacquire the existing durable submission:
-
-```json
-{
-  "type": "input",
-  "content": "Explain durable execution in one sentence.",
-  "requestId": "turn-1"
-}
-```
-
-The route waits for the Harness submission. A completed turn returns the settled submission and its `pi.assistant` entry. A terminal turn without an answer returns `status: "unanswered"` and its reason, such as `no_model`. This temporary endpoint supports text input only.
 
 The project also runs pi-durable's reusable storage conformance and benchmark suites against Cloudflare Durable Object SQLite.
 
@@ -60,7 +52,10 @@ pnpm format
 pnpm test
 pnpm benchmark
 pnpm check
+pnpm build
 pnpm dev
 ```
+
+`pnpm dev` runs the React UI and Worker together through Cloudflare's Vite plugin with hot module replacement. Use `pnpm preview` to run a production build locally in the Workers runtime.
 
 `pnpm benchmark` runs the reusable pi-durable storage workloads in the local Workers runtime. Results vary by machine and are not production latency measurements.
