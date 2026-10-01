@@ -259,6 +259,7 @@ describe("session event reducer", () => {
                     { type: "text", text: "Sunny" },
                     { type: "text", text: "<harness>\n[warn] Output truncated\n</harness>" },
                   ],
+                  details: { source: "cache" },
                   isError: false,
                   timestamp: 1,
                 },
@@ -271,7 +272,65 @@ describe("session event reducer", () => {
     });
 
     expect(state.snapshots[1]?.entries).toEqual([
-      expect.objectContaining({ role: "tool", text: "Sunny", diagnostics }),
+      expect.objectContaining({
+        role: "tool",
+        text: "Sunny",
+        diagnostics,
+        toolResult: {
+          callId: "call-1",
+          name: "get_weather",
+          isError: false,
+          details: { source: "cache" },
+        },
+      }),
+    ]);
+  });
+
+  it("keeps assistant tool calls structured instead of repeating them as transcript text", () => {
+    const state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "conversation.events",
+        conversationId: 1,
+        events: [
+          {
+            type: "entry_appended",
+            entry: {
+              id: 3,
+              conversationId: 1,
+              kind: "pi.assistant",
+              model: [
+                {
+                  ...assistant("I will check."),
+                  content: [
+                    { type: "text", text: "I will check." },
+                    {
+                      type: "toolCall",
+                      id: "call-1",
+                      name: "get_weather",
+                      arguments: { location: "Vienna" },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    expect(state.snapshots[1]?.entries).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        text: "I will check.",
+        toolCalls: [
+          {
+            callId: "call-1",
+            name: "get_weather",
+            args: { location: "Vienna" },
+          },
+        ],
+      }),
     ]);
   });
 

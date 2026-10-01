@@ -1,5 +1,5 @@
 import type { JsonValue } from "@earendil-works/chord";
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, NestedToolCalls } from "@earendil-works/pi-ai";
 import type {
   AgentState,
   AgentEvent,
@@ -21,6 +21,20 @@ import {
   type ServerEvent,
 } from "../protocol.ts";
 
+export interface TranscriptToolCall {
+  readonly callId: string;
+  readonly name: string;
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
+export interface TranscriptToolResult {
+  readonly callId: string;
+  readonly name: string;
+  readonly isError: boolean;
+  readonly details?: unknown;
+  readonly nestedCalls?: NestedToolCalls;
+}
+
 export interface TranscriptEntry {
   readonly id: number;
   readonly conversationId: number;
@@ -38,6 +52,8 @@ export interface TranscriptEntry {
   readonly timestamp?: number;
   readonly canFork: boolean;
   readonly diagnostics?: readonly ToolDiagnostic[];
+  readonly toolCalls?: readonly TranscriptToolCall[];
+  readonly toolResult?: TranscriptToolResult;
 }
 
 export interface LiveConversation {
@@ -513,15 +529,40 @@ function transcriptEntry(entry: EntryRecord): TranscriptEntry {
       role: "tool",
       text: toolResultText(first.content, diagnostics.length > 0),
       ...(diagnostics.length === 0 ? {} : { diagnostics }),
+      toolResult: {
+        callId: first.toolCallId,
+        name: first.toolName,
+        isError: first.isError,
+        ...(first.details === undefined ? {} : { details: first.details }),
+        ...(first.nestedCalls === undefined ? {} : { nestedCalls: first.nestedCalls }),
+      },
     };
   }
   const rawText =
     entry.model?.map(messageText).filter(Boolean).join("\n\n") ||
-    (entry.data === undefined ? entry.kind : JSON.stringify(entry.data));
+    (first?.role === "assistant"
+      ? ""
+      : entry.data === undefined
+        ? entry.kind
+        : JSON.stringify(entry.data));
   const scheduled = first?.role === "user" ? parseScheduledInstruction(rawText) : undefined;
   const role = scheduled === undefined ? messageRole(first) : "scheduled";
   const text = scheduled ?? rawText;
-  return { ...base, role, text, canFork: role === "user" || role === "assistant" };
+  const toolCalls =
+    first?.role === "assistant"
+      ? first.content.flatMap((part) =>
+          part.type === "toolCall"
+            ? [{ callId: part.id, name: part.name, args: part.arguments }]
+            : [],
+        )
+      : [];
+  return {
+    ...base,
+    role,
+    text,
+    canFork: role === "user" || role === "assistant",
+    ...(toolCalls.length === 0 ? {} : { toolCalls }),
+  };
 }
 
 /** Compaction entries wrap the summary in the Harness's fixed `<summary>` framing. */
@@ -601,8 +642,6 @@ function assistantText(content: readonly unknown[]): string {
     .map((part) => {
       if (!isRecord(part)) return "";
       if (part.type === "text" && typeof part.text === "string") return part.text;
-      if (part.type === "toolCall" && typeof part.name === "string")
-        return `Tool call: ${part.name}`;
       return "";
     })
     .filter(Boolean)

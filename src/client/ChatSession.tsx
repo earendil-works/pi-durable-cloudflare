@@ -13,8 +13,8 @@ import {
   type ConversationSummary,
   ROOT_CONVERSATION_ID,
 } from "../protocol.ts";
-import type { ToolDiagnostic } from "@earendil-works/pi-durable";
-import type { ConversationSnapshot, ToolProgress, TranscriptEntry } from "./session-state.ts";
+import type { ConversationSnapshot } from "./session-state.ts";
+import { MessageText, TranscriptList } from "./Transcript.tsx";
 import { usePiSession } from "./usePiSession.ts";
 
 interface ChatSessionProps {
@@ -246,20 +246,16 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
               from any committed user or assistant message.
             </p>
           ) : (
-            <ol className="transcript-list">
-              {activeConversation.entries.map((entry) => (
-                <li key={entry.id}>
-                  <TranscriptMessage
-                    entry={entry}
-                    onFork={
-                      activeConversationId === undefined
-                        ? undefined
-                        : () => session.forkConversation(activeConversationId, entry.id)
-                    }
-                  />
-                </li>
-              ))}
-            </ol>
+            <TranscriptList
+              entries={activeConversation.entries}
+              tools={activeConversation.tools}
+              runActive={activeConversation.live !== null}
+              onFork={
+                activeConversationId === undefined
+                  ? undefined
+                  : (entryId) => session.forkConversation(activeConversationId, entryId)
+              }
+            />
           )}
 
           {activeConversation?.live === null || activeConversation?.live === undefined ? null : (
@@ -281,10 +277,6 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
             </article>
           )}
 
-          {activeConversation === undefined || activeConversation.tools.length === 0 ? null : (
-            <ToolActivity tools={activeConversation.tools} />
-          )}
-
           {activeConversation === undefined ||
           activeConversation.compactions.length === 0 ? null : (
             <p className="compaction-status" role="status">
@@ -304,7 +296,10 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
                 <li key={input.submissionId}>
                   <article className="transcript-message transcript-message--user transcript-message--queued">
                     <header>
-                      <strong>User</strong> <span>Queued</span>
+                      <div className="transcript-message-title">
+                        <strong>User</strong>
+                        <span>Queued</span>
+                      </div>
                     </header>
                     <MessageText text={input.text} />
                   </article>
@@ -385,43 +380,6 @@ function RuntimeDatum({ label, value }: { readonly label: string; readonly value
   );
 }
 
-function ToolActivity({ tools }: { readonly tools: readonly ToolProgress[] }) {
-  return (
-    <section className="tool-activity" aria-labelledby="tool-activity-heading">
-      <h3 id="tool-activity-heading">Tool activity</h3>
-      <ol>
-        {tools.map((tool) => (
-          <li key={tool.callId}>
-            <article aria-busy={tool.status === "running"}>
-              <header>
-                <strong>{tool.name}</strong> <span>{capitalize(tool.status)}</span>
-              </header>
-              {tool.args === undefined ? null : (
-                <details>
-                  <summary>Arguments</summary>
-                  <pre>{JSON.stringify(tool.args, null, 2)}</pre>
-                </details>
-              )}
-              {tool.output === undefined || tool.output.length === 0 ? null : (
-                <pre>{tool.output}</pre>
-              )}
-              {tool.details === undefined ? null : (
-                <details>
-                  <summary>Details</summary>
-                  <pre>{JSON.stringify(tool.details, null, 2)}</pre>
-                </details>
-              )}
-              {tool.diagnostics === undefined || tool.diagnostics.length === 0 ? null : (
-                <Diagnostics diagnostics={tool.diagnostics} />
-              )}
-            </article>
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
 function usageTotals(usage: ConversationSnapshot["usage"]): { tokens: number; cost: number } {
   let tokens = 0;
   let cost = 0;
@@ -448,96 +406,3 @@ function compactionStatusText(compactions: ConversationSnapshot["compactions"]):
     ? "Compacting context before responding…"
     : "Compacting context in the background…";
 }
-
-const formatMessageTime = (timestamp: Date): string => {
-  const now = new Date();
-  const isToday =
-    timestamp.getDate() === now.getDate() &&
-    timestamp.getMonth() === now.getMonth() &&
-    timestamp.getFullYear() === now.getFullYear();
-  return timestamp.toLocaleString(undefined, {
-    ...(isToday ? {} : { month: "short", day: "numeric" }),
-    hour: "numeric",
-    minute: "2-digit",
-  });
-};
-
-const formatAbsoluteTime = (timestamp: Date): string =>
-  timestamp.toLocaleString(undefined, {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-
-const roleLabel: Record<TranscriptEntry["role"], string> = {
-  user: "User",
-  assistant: "Assistant",
-  system: "System",
-  tool: "Tool",
-  scheduled: "Scheduled",
-  compaction: "Context summary",
-  reset: "Context reset",
-  event: "Event",
-};
-
-function TranscriptMessage({
-  entry,
-  onFork,
-}: {
-  readonly entry: TranscriptEntry;
-  readonly onFork?: () => void;
-}) {
-  const timestamp = entry.timestamp === undefined ? undefined : new Date(entry.timestamp);
-
-  return (
-    <article className={`transcript-message transcript-message--${entry.role}`}>
-      <header>
-        <strong>{roleLabel[entry.role]}</strong>
-        {timestamp === undefined ? null : (
-          <time dateTime={timestamp.toISOString()} title={formatAbsoluteTime(timestamp)}>
-            {formatMessageTime(timestamp)}
-          </time>
-        )}
-      </header>
-      <MessageText text={entry.text} />
-      {entry.diagnostics === undefined ? null : <Diagnostics diagnostics={entry.diagnostics} />}
-      {!entry.canFork || onFork === undefined ? null : (
-        <footer>
-          <button className="text-button" type="button" onClick={onFork}>
-            Fork from here
-          </button>
-        </footer>
-      )}
-    </article>
-  );
-}
-
-function Diagnostics({ diagnostics }: { readonly diagnostics: readonly ToolDiagnostic[] }) {
-  return (
-    <ul>
-      {diagnostics.map((diagnostic, index) => (
-        <li key={`${diagnostic.code ?? "diagnostic"}-${index}`}>
-          <strong>{capitalize(diagnostic.severity)}</strong>: {diagnostic.message}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function MessageText({ text }: { readonly text: string }) {
-  const paragraphs = text.split(/\n{2,}/);
-  return (
-    <>
-      {paragraphs.map((paragraph, index) => (
-        <p key={index}>{paragraph}</p>
-      ))}
-    </>
-  );
-}
-
-const capitalize = (value: string): string =>
-  value.length === 0 ? value : value[0].toUpperCase() + value.slice(1);

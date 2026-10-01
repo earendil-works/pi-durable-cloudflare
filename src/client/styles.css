@@ -135,25 +135,119 @@ body:has(.session-workspace) {
   padding: 1rem;
 }
 
-.transcript-list {
-  display: grid;
-  gap: 1rem;
+.transcript-list,
+.tool-executions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.transcript-message header {
+.transcript-list {
+  display: grid;
+  gap: 0.875rem;
+}
+
+.transcript-turn {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.tool-executions {
+  display: grid;
+  gap: 0.5rem;
+  margin-inline-start: 1rem;
+}
+
+.tool-execution {
+  padding-block: 0.625rem;
+  border-block: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.tool-execution header {
   display: flex;
   flex-wrap: wrap;
+  align-items: baseline;
   gap: 0.5rem;
 }
 
-.transcript-message p {
+.tool-status {
+  font-size: 0.875em;
+}
+
+.tool-execution--waiting .tool-status,
+.tool-execution--running .tool-status {
+  font-weight: 600;
+}
+
+.tool-execution details {
+  margin-block-start: 0.5rem;
+}
+
+.tool-execution summary {
+  cursor: pointer;
+}
+
+.tool-execution p,
+.tool-execution pre {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
-.transcript-message footer,
+.tool-execution pre {
+  max-inline-size: 100%;
+  overflow-x: auto;
+  padding: 0.625rem;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.diagnostics {
+  padding-inline-start: 1.25rem;
+}
+
+.transcript-message {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.transcript-message header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.transcript-message-title {
+  display: flex;
+  min-inline-size: 0;
+  align-items: baseline;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+
+.transcript-message-title strong {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transcript-message-title span,
+.transcript-message-title time,
+.transcript-fork {
+  flex: none;
+}
+
+.transcript-fork {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.transcript-message p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .transcript-message--live,
-.tool-activity,
 .compaction-status,
 .transcript-error {
   margin-block-start: 1rem;
@@ -165,13 +259,6 @@ body:has(.session-workspace) {
 
 .queued-inputs {
   margin-block-start: 1rem;
-}
-
-.tool-activity pre {
-  max-inline-size: 100%;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .prompt-bar {
