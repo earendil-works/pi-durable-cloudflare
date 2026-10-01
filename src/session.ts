@@ -6,8 +6,9 @@ import {
   type ConversationId,
   type ConversationRecord,
   type Cursor,
+  defineDocFamily,
   type EntryId,
-  type Harness,
+  Harness,
   InboxDoc,
   type TaskId,
   watchEvents,
@@ -15,7 +16,7 @@ import {
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { normalizeUsername } from "./identity.ts";
 import { planHarnessAlarm } from "./schedule.ts";
-import { initializeConversation, openChatHarness } from "./chat.ts";
+import { createChatHarnessOptions } from "./chat.ts";
 import {
   InvalidClientCommand,
   MAX_CLIENT_FRAME_CHARACTERS,
@@ -46,6 +47,31 @@ const reportError = (
 
 const RECOVERY_ALARM_DELAY_MS = 60_000;
 const CONVERSATION_PAGE_SIZE = 100;
+
+type ConversationCommandReceipt =
+  | {
+      command: "conversation.create";
+      conversationId: ConversationId;
+    }
+  | {
+      command: "conversation.fork";
+      conversationId: ConversationId;
+      parentConversationId: ConversationId;
+      entryId: EntryId;
+    };
+
+const ConversationCommandReceipts = defineDocFamily<
+  {
+    receipt?: ConversationCommandReceipt;
+  },
+  null
+>({
+  family: true,
+  kind: "app.conversation-command-receipt",
+  version: 1,
+  scope: "session",
+  initial: () => ({}),
+});
 
 type SessionConnectionState = {
   readonly username: string;
@@ -90,9 +116,13 @@ export class Session extends Server<Env> {
 
   override async onStart(): Promise<void> {
     const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(this.ctx.storage));
-    this.#harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
-      scheduleCreated: () => this.#refreshAlarm(),
-    });
+    this.#harness = await Harness.open(
+      storage,
+      createChatHarnessOptions({
+        scheduleCreated: () => this.#refreshAlarm(),
+      }),
+      BACKGROUND_CONTEXT,
+    );
     // Tool calls create subagent conversations outside any socket command; announce them to every open sidebar.
     this.#harness.subscribeCommits((publication) => {
       const subagentCreated = publication.changes.some(
@@ -193,7 +223,7 @@ export class Session extends Server<Env> {
     server: Connection<SessionConnectionState>,
     context: ConnectionContext,
   ): Promise<void> {
-    const root = await this.#harness.root(BACKGROUND_CONTEXT, { init: initializeConversation });
+    const root = await this.#harness.root(BACKGROUND_CONTEXT);
     server.setState({ username: usernameForConnection(server, context.request) });
     await this.#sendSessionSnapshot(server);
     await this.#watchConversation(server, root.id);
@@ -220,38 +250,70 @@ export class Session extends Server<Env> {
         });
         return;
       case "conversation.create": {
-        const conversation = await this.#harness.createConversation(
-          { ownership: { kind: "ownerless" }, init: initializeConversation },
-          BACKGROUND_CONTEXT,
-        );
+        const conversationId = await this.#harness.commit(async (tx) => {
+          const receipt = await tx.doc(ConversationCommandReceipts, command.requestId, null);
+          const existing = receipt.receipt;
+          if (existing !== undefined) {
+            if (existing.command !== command.type) {
+              throw new Error(
+                `Request ${command.requestId} was already used for ${existing.command}`,
+              );
+            }
+            return existing.conversationId;
+          }
+          const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
+          receipt.receipt = {
+            command: command.type,
+            conversationId: conversation.id,
+          };
+          return conversation.id;
+        }, BACKGROUND_CONTEXT);
+        await this.#watchConversation(socket, conversationId);
         await this.#broadcastSessionSnapshot();
-        await this.#watchConversation(socket, conversation.id);
         this.#send(socket, {
           type: "command.result",
           command: command.type,
           requestId: command.requestId,
           ok: true,
-          conversationId: conversation.id,
+          conversationId,
         });
         return;
       }
       case "conversation.fork": {
-        const conversation = await this.#requireConversation(
-          command.conversationId as ConversationId,
-        );
-        const fork = await conversation.fork(
-          command.entryId as EntryId,
-          { ownership: { kind: "ownerless" } },
-          BACKGROUND_CONTEXT,
-        );
+        const parentConversationId = command.conversationId as ConversationId;
+        const entryId = command.entryId as EntryId;
+        const conversationId = await this.#harness.commit(async (tx) => {
+          const receipt = await tx.doc(ConversationCommandReceipts, command.requestId, null);
+          const existing = receipt.receipt;
+          if (existing !== undefined) {
+            if (
+              existing.command !== command.type ||
+              existing.parentConversationId !== parentConversationId ||
+              existing.entryId !== entryId
+            ) {
+              throw new Error(`Request ${command.requestId} was already used for another command`);
+            }
+            return existing.conversationId;
+          }
+          const fork = await tx.forkConversation(parentConversationId, entryId, {
+            ownership: { kind: "ownerless" },
+          });
+          receipt.receipt = {
+            command: command.type,
+            conversationId: fork.id,
+            parentConversationId,
+            entryId,
+          };
+          return fork.id;
+        }, BACKGROUND_CONTEXT);
+        await this.#watchConversation(socket, conversationId);
         await this.#broadcastSessionSnapshot();
-        await this.#watchConversation(socket, fork.id);
         this.#send(socket, {
           type: "command.result",
           command: command.type,
           requestId: command.requestId,
           ok: true,
-          conversationId: fork.id,
+          conversationId,
         });
         return;
       }
@@ -271,11 +333,6 @@ export class Session extends Server<Env> {
           },
           BACKGROUND_CONTEXT,
         );
-        void submission
-          .wait(BACKGROUND_CONTEXT)
-          .then(() => this.#refreshAlarm())
-          .catch((error: unknown) => reportError("Prompt alarm reconciliation failed", error));
-        await this.#refreshAlarm();
         this.#send(socket, {
           type: "command.result",
           command: command.type,
@@ -284,6 +341,15 @@ export class Session extends Server<Env> {
           conversationId: conversation.id,
           submissionId: submission.id,
         });
+        void submission
+          .wait(BACKGROUND_CONTEXT)
+          .then(() => this.#refreshAlarm())
+          .catch((error: unknown) => reportError("Prompt alarm reconciliation failed", error));
+        try {
+          await this.#refreshAlarm();
+        } catch (error) {
+          reportError("Prompt alarm reconciliation failed", error);
+        }
       }
     }
   }

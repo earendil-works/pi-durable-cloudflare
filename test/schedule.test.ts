@@ -6,8 +6,13 @@ import {
   fauxText,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { describe, expect, it } from "vitest";
+import {
+  createRegistry,
+  defineExtension,
+  Harness,
+  MemoryStorage,
+} from "@earendil-works/pi-durable";
+import { describe, expect, it, vi } from "vitest";
 import { formatScheduledInstruction } from "../src/protocol.ts";
 import {
   DeliverScheduledInstruction,
@@ -32,19 +37,25 @@ describe("scheduled instructions", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    registry.tasks.add(DeliverScheduledInstruction);
     let schedulesCreated = 0;
-    registry.tools.add(
-      createScheduleTool(async () => {
-        schedulesCreated++;
+    const scheduleTool = createScheduleTool(async () => {
+      schedulesCreated++;
+    });
+    registry.install(
+      defineExtension({
+        name: "schedule",
+        tasks: [DeliverScheduledInstruction],
+        tools: [scheduleTool],
       }),
     );
-    const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
 
+    const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
     try {
       const root = await harness.root(context);
-      await root.setModel({ provider: "faux", modelId: "faux-1" }, context);
-      await root.setActiveTools(["schedule"], context);
+      await root.configure(
+        { model: { provider: "faux", modelId: "faux-1" }, tools: [scheduleTool] },
+        context,
+      );
       const scheduled = {
         id: "schedule:due",
         conversationId: root.id,
@@ -81,18 +92,28 @@ describe("scheduled instructions", () => {
     }
   });
 
-  it("lets a recurring instruction schedule its next occurrence", async () => {
+  it("stores recurrence policy and atomically creates one successor", async () => {
     const now = Date.now();
     const faux = fauxProvider();
     faux.setResponses([
       fauxAssistantMessage(
         [
-          fauxToolCall("schedule", {
-            instruction: "Check the oven",
-            delaySeconds: 60,
-            recurring: true,
-            sourceScheduleId: "schedule:recurring",
-          }),
+          fauxToolCall(
+            "schedule",
+            {
+              instruction: "Check the oven",
+              sourceScheduleId: "schedule:recurring",
+            },
+            { id: "next-1" },
+          ),
+          fauxToolCall(
+            "schedule",
+            {
+              instruction: "Check the oven",
+              sourceScheduleId: "schedule:recurring",
+            },
+            { id: "next-2" },
+          ),
         ],
         { stopReason: "toolUse" },
       ),
@@ -101,25 +122,35 @@ describe("scheduled instructions", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    registry.tasks.add(DeliverScheduledInstruction);
     let schedulesCreated = 0;
-    registry.tools.add(
-      createScheduleTool(async () => {
-        schedulesCreated++;
+    const scheduleTool = createScheduleTool(async () => {
+      schedulesCreated++;
+    });
+    registry.install(
+      defineExtension({
+        name: "schedule",
+        tasks: [DeliverScheduledInstruction],
+        tools: [scheduleTool],
       }),
     );
-    const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
 
+    const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
     try {
       const root = await harness.root(context);
-      await root.setModel({ provider: "faux", modelId: "faux-1" }, context);
-      await root.setActiveTools(["schedule"], context);
+      await root.configure(
+        { model: { provider: "faux", modelId: "faux-1" }, tools: [scheduleTool] },
+        context,
+      );
+      const recurrence = {
+        cadence: { unit: "minute" as const, interval: 1 },
+        timezone: "Europe/Vienna",
+      };
       const scheduled = {
         id: "schedule:recurring",
         conversationId: root.id,
         instruction: "Check the oven",
         runAt: now - 1,
-        recurring: true as const,
+        recurrence,
       };
       const delivery = await root.commit(
         (tx) =>
@@ -142,12 +173,20 @@ describe("scheduled instructions", () => {
         conversationId: root.id,
         instruction: "Check the oven",
         runAt: expect.any(Number),
-        recurring: true,
+        recurrence,
       });
-      expect(next.runAt).toBeGreaterThanOrEqual(now + 60_000);
+      expect(next.runAt).toBeGreaterThanOrEqual(now + 59_000);
+      expect(next.runAt).toBeLessThanOrEqual(Date.now() + 60_000);
       expect(await harness.snapshot(ScheduleDeliveries, context)).toEqual({ active: [] });
-      expect(schedulesCreated).toBe(1);
-      expect((await root.context(context)).messages).toEqual(
+      expect(schedulesCreated).toBe(2);
+      const messages = (await root.context(context)).messages;
+      const toolResults = messages.filter(
+        (message): message is Extract<(typeof messages)[number], { role: "toolResult" }> =>
+          message.role === "toolResult",
+      );
+      expect(toolResults).toHaveLength(2);
+      expect(toolResults.every((result) => result.isError !== true)).toBe(true);
+      expect(messages).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             role: "user",
@@ -160,10 +199,172 @@ describe("scheduled instructions", () => {
     }
   });
 
+  it("derives recurring deadlines from the previous deadline across delays and DST", async () => {
+    const cases = [
+      {
+        name: "minutes skip elapsed occurrences",
+        previous: "2026-01-01T10:00:00.000Z",
+        now: "2026-01-01T10:05:00.000Z",
+        expected: "2026-01-01T10:06:00.000Z",
+        cadence: { unit: "minute" as const, interval: 2 },
+        timezone: "UTC",
+      },
+      {
+        name: "hours use fixed elapsed durations",
+        previous: "2026-01-01T10:00:00.000Z",
+        now: "2026-01-01T15:30:00.000Z",
+        expected: "2026-01-01T16:00:00.000Z",
+        cadence: { unit: "hour" as const, interval: 2 },
+        timezone: "Europe/Vienna",
+      },
+      {
+        name: "days preserve wall time and skip a delayed DST occurrence",
+        previous: "2026-03-28T08:00:00.000Z",
+        now: "2026-03-29T07:30:00.000Z",
+        expected: "2026-03-30T07:00:00.000Z",
+        cadence: { unit: "day" as const, interval: 1 },
+        timezone: "Europe/Vienna",
+      },
+      {
+        name: "DST gaps advance from the resolved elapsed occurrence",
+        previous: "2026-03-28T01:30:00.000Z",
+        now: "2026-03-29T02:00:00.000Z",
+        expected: "2026-03-30T01:30:00.000Z",
+        cadence: { unit: "day" as const, interval: 1 },
+        timezone: "Europe/Vienna",
+      },
+      {
+        name: "weeks preserve wall time across DST",
+        previous: "2026-03-22T08:00:00.000Z",
+        now: "2026-03-22T09:00:00.000Z",
+        expected: "2026-03-29T07:00:00.000Z",
+        cadence: { unit: "week" as const, interval: 1 },
+        timezone: "Europe/Vienna",
+      },
+      {
+        name: "months clamp to the target calendar month",
+        previous: "2026-01-31T08:00:00.000Z",
+        now: "2026-01-31T10:00:00.000Z",
+        expected: "2026-02-28T08:00:00.000Z",
+        cadence: { unit: "month" as const, interval: 1 },
+        timezone: "Europe/Vienna",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const now = Date.parse(testCase.now);
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+      const faux = fauxProvider();
+      faux.setResponses([
+        fauxAssistantMessage(
+          [
+            fauxToolCall("schedule", {
+              instruction: testCase.name,
+              sourceScheduleId: "schedule:calendar",
+            }),
+          ],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage([fauxText("Scheduled the next occurrence.")]),
+      ]);
+      const models = createModels();
+      models.setProvider(faux.provider);
+      const registry = createRegistry();
+      const scheduleTool = createScheduleTool(async () => {});
+      registry.install(
+        defineExtension({
+          name: "schedule",
+          tasks: [DeliverScheduledInstruction],
+          tools: [scheduleTool],
+        }),
+      );
+      const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+      try {
+        const root = await harness.root(context);
+        await root.configure(
+          { model: { provider: "faux", modelId: "faux-1" }, tools: [scheduleTool] },
+          context,
+        );
+        const delivery = await root.commit(
+          (tx) =>
+            tx.createTask(
+              DeliverScheduledInstruction,
+              {
+                id: "schedule:calendar",
+                conversationId: root.id,
+                instruction: testCase.name,
+                runAt: Date.parse(testCase.previous),
+                recurrence: {
+                  cadence: testCase.cadence,
+                  timezone: testCase.timezone,
+                },
+              },
+              { ownership: { kind: "conversation" }, background: true },
+            ),
+          context,
+        );
+
+        await harness.waitForTask(delivery, context);
+
+        const successors = (await harness.inspect(context)).tasks.filter(
+          ({ record }) => record.kind === DeliverScheduledInstruction.definition.name,
+        );
+        expect({
+          name: testCase.name,
+          runAt: (successors[0]?.record.input as { runAt?: number } | undefined)?.runAt,
+        }).toEqual({ name: testCase.name, runAt: Date.parse(testCase.expected) });
+      } finally {
+        await harness.close(context);
+        nowSpy.mockRestore();
+      }
+    }
+  });
+
+  it("cleans up an active delivery when submission fails unexpectedly", async () => {
+    const registry = createRegistry();
+    registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
+    const harness = await Harness.open(
+      new MemoryStorage(),
+      { models: createModels(), registry },
+      context,
+    );
+    try {
+      const root = await harness.root(context);
+      await root.submit(
+        {
+          type: "write",
+          requestId: "schedule:collision",
+          entry: { kind: "collision" },
+        },
+        context,
+      );
+      const delivery = await root.commit(
+        (tx) =>
+          tx.createTask(
+            DeliverScheduledInstruction,
+            {
+              id: "schedule:collision",
+              conversationId: root.id,
+              instruction: "Cannot be submitted",
+              runAt: Date.now() - 1,
+            },
+            { ownership: { kind: "conversation" }, background: true },
+          ),
+        context,
+      );
+
+      await harness.waitForTask(delivery, context);
+
+      expect(await harness.snapshot(ScheduleDeliveries, context)).toEqual({ active: [] });
+    } finally {
+      await harness.close(context);
+    }
+  });
+
   it("plans one infrastructure alarm from delayed and active Harness tasks", async () => {
     const now = Date.now();
     const registry = createRegistry();
-    registry.tasks.add(DeliverScheduledInstruction);
+    registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
     const harness = await Harness.open(
       new MemoryStorage(),
       { models: createModels(), registry },

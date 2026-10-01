@@ -2,9 +2,10 @@ import type { Context } from "@earendil-works/chord";
 import { type AssistantMessage, type Message, Type } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
-  ConversationConfig,
+  configure,
   type ConversationId,
   type Cursor,
+  defineExtension,
   type EntryRecord,
   type ToolExecutionApi,
   type ToolRegistration,
@@ -113,6 +114,11 @@ export const searchConversationsTool: ToolRegistration = {
   },
 };
 
+export const recallSearchExtension = defineExtension({
+  name: "recall-search",
+  tools: [searchConversationsTool],
+});
+
 /**
  * Delegates a question about past conversations to a subagent: a child conversation owned by this tool call, which
  * searches with `search_conversations` and answers. The parent receives only the answer, not the raw matches.
@@ -129,7 +135,6 @@ export const recallTool: ToolRegistration = {
   replay: "safe",
   execute: async (args, api, context) => {
     const { question } = args as { question: string };
-    const parent = await api.snapshot(ConversationConfig, api.conversationId, context);
     const childId: ConversationId = await api.commit(async (tx) => {
       // Ownership is the durable record of the child, so a rerun reuses it instead of creating another.
       const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
@@ -137,9 +142,10 @@ export const recallTool: ToolRegistration = {
       const child = await tx.createConversation({
         ownership: { kind: "task", taskId: api.taskId },
       });
-      const config = await tx.doc(ConversationConfig, child.id);
-      if (parent?.model !== undefined) config.model = { ...parent.model };
-      config.activeTools = [SEARCH_CONVERSATIONS_TOOL_NAME];
+      await configure(tx, child.id, {
+        extensions: [recallSearchExtension],
+        tools: [searchConversationsTool],
+      });
       return child.id;
     }, context);
     // A UI watching the parent sees the child in the call's details.

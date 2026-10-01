@@ -343,23 +343,27 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
 }
 
 function ConversationDetails({ conversation }: { readonly conversation: ConversationSnapshot }) {
-  const config = conversation.config;
+  const agent = conversation.agent;
   const totals = usageTotals(conversation.usage);
   const model =
-    config?.model === undefined
+    agent?.model === undefined
       ? "Provider default"
-      : `${config.model.provider}/${config.model.modelId}`;
+      : `${agent.model.provider}/${agent.model.modelId}`;
   const tools =
-    config === undefined || config.activeTools.length === 0
-      ? "None"
-      : config.activeTools.join(", ");
+    agent?.tools === undefined
+      ? "Host default"
+      : Array.isArray(agent.tools)
+        ? agent.tools.length === 0
+          ? "None"
+          : agent.tools.join(", ")
+        : `Host default except ${agent.tools.remove.join(", ")}`;
 
   return (
     <section className="runtime-information" aria-label="Runtime information">
       <dl>
         <div className="runtime-primary">
           <RuntimeDatum label="Model" value={model} />
-          <RuntimeDatum label="Thinking" value={config?.thinkingLevel ?? "off"} />
+          <RuntimeDatum label="Thinking" value={agent?.thinkingLevel ?? "off"} />
           <RuntimeDatum label="Tokens" value={totals.tokens.toLocaleString()} />
           <RuntimeDatum label="Cost" value={formatCost(totals.cost)} />
         </div>
@@ -445,6 +449,30 @@ function compactionStatusText(compactions: ConversationSnapshot["compactions"]):
     : "Compacting context in the background…";
 }
 
+const formatMessageTime = (timestamp: Date): string => {
+  const now = new Date();
+  const isToday =
+    timestamp.getDate() === now.getDate() &&
+    timestamp.getMonth() === now.getMonth() &&
+    timestamp.getFullYear() === now.getFullYear();
+  return timestamp.toLocaleString(undefined, {
+    ...(isToday ? {} : { month: "short", day: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
+const formatAbsoluteTime = (timestamp: Date): string =>
+  timestamp.toLocaleString(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
 const roleLabel: Record<TranscriptEntry["role"], string> = {
   user: "User",
   assistant: "Assistant",
@@ -470,7 +498,9 @@ function TranscriptMessage({
       <header>
         <strong>{roleLabel[entry.role]}</strong>
         {timestamp === undefined ? null : (
-          <time dateTime={timestamp.toISOString()}>{timestamp.toLocaleString()}</time>
+          <time dateTime={timestamp.toISOString()} title={formatAbsoluteTime(timestamp)}>
+            {formatMessageTime(timestamp)}
+          </time>
         )}
       </header>
       <MessageText text={entry.text} />

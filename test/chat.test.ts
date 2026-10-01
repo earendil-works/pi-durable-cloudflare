@@ -2,15 +2,10 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
-import {
-  ConversationConfig,
-  type ConversationId,
-  createRegistry,
-  Harness,
-} from "@earendil-works/pi-durable";
+import { type ConversationId, createRegistry, Harness } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { describe, expect, it } from "vitest";
-import { openChatHarness } from "../src/chat.ts";
+import { createChatHarnessOptions } from "../src/chat.ts";
 import worker from "../src/index.ts";
 import { MAX_CLIENT_FRAME_CHARACTERS } from "../src/protocol.ts";
 import { DeliverScheduledInstruction } from "../src/schedule.ts";
@@ -105,18 +100,22 @@ async function configureOfflineModel(sessionId: string, conversationId: number =
   const stub = env.SESSIONS.getByName(sessionId);
   await runInDurableObject(stub, async (_instance, state) => {
     const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
-    const harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
-      scheduleCreated: async () => {},
-    });
+    const harness = await Harness.open(
+      storage,
+      createChatHarnessOptions({ scheduleCreated: async () => {} }),
+      BACKGROUND_CONTEXT,
+    );
     try {
       await harness.root(BACKGROUND_CONTEXT);
-      await harness.commit(async (tx) => {
-        Object.assign(await tx.doc(ConversationConfig, conversationId as ConversationId), {
-          model: { provider: "offline", modelId: "offline" },
-          thinkingLevel: "off",
-          activeTools: [],
-        });
-      }, BACKGROUND_CONTEXT);
+      const conversation = await harness.conversation(
+        conversationId as ConversationId,
+        BACKGROUND_CONTEXT,
+      );
+      if (conversation === undefined) throw new Error(`Conversation ${conversationId} is missing`);
+      await conversation.configure(
+        { model: { provider: "offline", modelId: "offline" }, tools: [] },
+        BACKGROUND_CONTEXT,
+      );
     } finally {
       await harness.close(BACKGROUND_CONTEXT);
     }
@@ -138,13 +137,7 @@ async function seedUserEntry(sessionId: string, content: string): Promise<number
     );
     try {
       const root = await harness.root(BACKGROUND_CONTEXT, {
-        init: async (tx, conversationId) => {
-          Object.assign(await tx.doc(ConversationConfig, conversationId), {
-            model: { provider: "faux", modelId: "faux-1" },
-            thinkingLevel: "off",
-            activeTools: [],
-          });
-        },
+        agent: { model: { provider: "faux", modelId: "faux-1" }, tools: [] },
       });
       const submission = await root.submit(
         { type: "input", content, requestId: "seed" },
@@ -305,6 +298,85 @@ describe("chat application", () => {
     );
     reopenedSocket.close(1000, "test complete");
   });
+  it("acknowledges and deduplicates retried conversation creation", async () => {
+    const sessionId = "retried-conversation-create";
+    const command = JSON.stringify({
+      type: "conversation.create",
+      requestId: "stable-create-request",
+    });
+    const response = await exports.default.fetch(
+      sessionSocketUrl(sessionId, "Alice", "create-retry-client"),
+      { headers: { Upgrade: "websocket" } },
+    );
+    const socket = response.webSocket!;
+    const messages = jsonMessages(socket);
+    socket.accept();
+    await messages.skipConnectFrames();
+
+    socket.send(command);
+    type CreateEvent = {
+      type: string;
+      requestId?: string;
+      conversationId?: number;
+    };
+    const creationFrames: CreateEvent[] = [];
+    while (
+      !creationFrames.some(
+        ({ type, requestId }) => type === "command.result" && requestId === "stable-create-request",
+      ) ||
+      !creationFrames.some(
+        ({ type, conversationId }) => type === "conversation.events" && conversationId !== 1,
+      )
+    ) {
+      creationFrames.push(await messages.next<CreateEvent>());
+    }
+    const acknowledgementIndex = creationFrames.findIndex(
+      ({ type, requestId }) => type === "command.result" && requestId === "stable-create-request",
+    );
+    const watchIndex = creationFrames.findIndex(
+      ({ type, conversationId }) => type === "conversation.events" && conversationId !== 1,
+    );
+    expect(watchIndex).toBeLessThan(acknowledgementIndex);
+    const first = creationFrames[acknowledgementIndex]!;
+    expect(first).toMatchObject({
+      type: "command.result",
+      requestId: "stable-create-request",
+      conversationId: expect.any(Number),
+    });
+
+    const closed = new Promise<void>((resolve) =>
+      socket.addEventListener("close", () => resolve(), { once: true }),
+    );
+    socket.close(1000, "retry after eviction");
+    await closed;
+    await evictDurableObject(env.SESSIONS.getByName(sessionId));
+
+    const reopened = await exports.default.fetch(
+      sessionSocketUrl(sessionId, "Alice", "create-retry-client-2"),
+      { headers: { Upgrade: "websocket" } },
+    );
+    const reopenedSocket = reopened.webSocket!;
+    const reopenedMessages = jsonMessages(reopenedSocket);
+    reopenedSocket.accept();
+    const snapshot = await reopenedMessages.next<{
+      type: string;
+      session: { conversations: Array<{ id: number }> };
+    }>();
+    expect(snapshot.session.conversations).toHaveLength(2);
+    for (let index = 0; index < 3; index++) await reopenedMessages.next();
+
+    reopenedSocket.send(command);
+    const retried = await reopenedMessages.nextMatching<CreateEvent>(
+      ({ type, requestId }) => type === "command.result" && requestId === "stable-create-request",
+    );
+    expect(retried).toMatchObject({
+      type: "command.result",
+      requestId: "stable-create-request",
+      conversationId: first.conversationId,
+    });
+    reopenedSocket.close(1000, "test complete");
+  });
+
   it("creates an opaque session URL", async () => {
     const response = await exports.default.fetch("https://example.com/api/sessions", {
       method: "POST",
@@ -349,7 +421,11 @@ describe("chat application", () => {
         {
           type: "snapshot",
           entries: [],
-          config: { activeTools: ["get_weather", "schedule", "recall"] },
+          agent: {
+            model: { provider: "openai", modelId: "gpt-6-luna" },
+            thinkingLevel: "off",
+            tools: ["get_weather", "schedule", "recall"],
+          },
         },
       ],
     });
@@ -615,6 +691,31 @@ describe("chat application", () => {
       parent: { conversationId: 1, at: entryId },
     });
     expect(receivedForkSnapshot).toBe(true);
+    socket.send(
+      JSON.stringify({
+        type: "conversation.fork",
+        requestId: "fork-1",
+        conversationId: 1,
+        entryId,
+      }),
+    );
+    const retryFrames: Event[] = [];
+    while (
+      !retryFrames.some(
+        (event) => event.type === "command.result" && event.requestId === "fork-1",
+      ) ||
+      !retryFrames.some((event) => event.type === "session.snapshot")
+    ) {
+      retryFrames.push(await messages.next<Event>());
+    }
+    const retried = retryFrames.find(
+      (event) => event.type === "command.result" && event.requestId === "fork-1",
+    );
+    expect(retried).toMatchObject({ ok: true, conversationId: forkId });
+    const afterRetry = retryFrames.find((event) => event.type === "session.snapshot");
+    expect(
+      afterRetry?.session?.conversations.filter(({ parent }) => parent !== undefined),
+    ).toHaveLength(1);
     socket.close(1000, "test complete");
   });
 
@@ -625,9 +726,11 @@ describe("chat application", () => {
       env.SESSIONS.getByName(sessionId),
       async (_instance, state) => {
         const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
-        const harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
-          scheduleCreated: async () => {},
-        });
+        const harness = await Harness.open(
+          storage,
+          createChatHarnessOptions({ scheduleCreated: async () => {} }),
+          BACKGROUND_CONTEXT,
+        );
         try {
           const root = await harness.root(BACKGROUND_CONTEXT);
           return await root.commit(async (tx) => {

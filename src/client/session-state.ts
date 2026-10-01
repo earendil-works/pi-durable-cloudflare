@@ -1,9 +1,9 @@
 import type { JsonValue } from "@earendil-works/chord";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type {
+  AgentState,
   AgentEvent,
   CompactionReason,
-  ConversationConfigState,
   EntryRecord,
   JsonObject,
   MessageChange,
@@ -75,7 +75,7 @@ export interface ConversationSnapshot {
   /** Inputs submitted during a running turn, waiting to be placed after it. */
   readonly queued: readonly QueuedInput[];
   readonly typing: readonly string[];
-  readonly config?: Readonly<ConversationConfigState>;
+  readonly agent?: Readonly<AgentState>;
   readonly usage?: Readonly<UsageState>;
   readonly failure?: {
     readonly taskId: number;
@@ -248,8 +248,8 @@ function reduceAgentEvent(
       return conversation.live === null
         ? conversation
         : { ...conversation, live: { ...conversation.live, retry: undefined } };
-    case "config_changed":
-      return { ...conversation, config: event.config };
+    case "agent_changed":
+      return { ...conversation, agent: event.agent };
     case "usage_changed":
       return { ...conversation, usage: event.usage };
     case "task_failed":
@@ -304,7 +304,7 @@ function snapshotConversation(
       reason,
       blocking,
     })),
-    config: event.config,
+    agent: event.agent,
     usage: event.usage,
     queued: conversation.queued,
     typing: conversation.typing,

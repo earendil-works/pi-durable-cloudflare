@@ -3,8 +3,9 @@ import { env, exports } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxProvider, type FauxResponseStep } from "@earendil-works/pi-ai";
 import {
-  ConversationConfig,
+  configure,
   createRegistry,
+  defineExtension,
   type ConversationId,
   type EntryId,
   Harness,
@@ -44,16 +45,51 @@ registerStorageConformance(
 );
 
 describe("Cloudflare Durable Object example", () => {
+  it("isolates transaction handles and queues unrelated database operations", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    await runInDurableObject(stub, async (_instance, state) => {
+      const database = createCloudflareSqliteDatabase(state.storage);
+      await database.exec("CREATE TABLE transaction_probe (value INTEGER)");
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let handle!: Parameters<Parameters<typeof database.transaction>[0]>[0];
+      const transaction = database.transaction(async (transactionHandle) => {
+        handle = transactionHandle;
+        await transactionHandle.run("INSERT INTO transaction_probe (value) VALUES (?)", 1);
+        started.resolve();
+        await release.promise;
+      });
+      await started.promise;
+
+      let outsideSettled = false;
+      const outside = database
+        .all<{ value: number }>("SELECT value FROM transaction_probe")
+        .finally(() => {
+          outsideSettled = true;
+        });
+      await Promise.resolve();
+      expect(outsideSettled).toBe(false);
+
+      release.resolve();
+      await transaction;
+      await expect(outside).resolves.toEqual([{ value: 1 }]);
+      await expect(handle.all("SELECT value FROM transaction_probe")).rejects.toThrow(
+        "SQLite transaction handle is no longer active",
+      );
+    });
+  });
+
   it("adapts binary values and rejects bigint query parameters", async () => {
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
-    await runInDurableObject(stub, (_instance, state) => {
+    await runInDurableObject(stub, async (_instance, state) => {
       const database = createCloudflareSqliteDatabase(state.storage);
-      const statement = database.prepare("SELECT ? AS value");
       const bytes = new Uint8Array([0, 1, 2, 3, 4]).subarray(1, 4);
-      expect(statement.get<{ readonly value: Uint8Array }>(bytes)).toEqual({
-        value: new Uint8Array([1, 2, 3]),
-      });
-      expect(() => statement.get(1n)).toThrow("does not accept bigint query parameters");
+      await expect(
+        database.get<{ readonly value: Uint8Array }>("SELECT ? AS value", bytes),
+      ).resolves.toEqual({ value: new Uint8Array([1, 2, 3]) });
+      await expect(database.get("SELECT ? AS value", 1n)).rejects.toThrow(
+        "does not accept bigint query parameters",
+      );
     });
   });
 
@@ -75,13 +111,12 @@ describe("Cloudflare Durable Object example", () => {
       const harness = await openFauxHarness(storage, [interrupted]);
       try {
         const root = await harness.root(context, {
-          init: async (tx, conversationId) => {
-            Object.assign(await tx.doc(ConversationConfig, conversationId), {
+          init: (tx, conversationId) =>
+            configure(tx, conversationId, {
               model: { provider: "faux", modelId: "faux-1" },
               thinkingLevel: "off",
-              activeTools: [],
-            });
-          },
+              tools: [],
+            }),
         });
         await root.submit(
           {
@@ -123,7 +158,7 @@ describe("Cloudflare Durable Object example", () => {
     const stub = env.SESSIONS.getByName(sessionId);
     await runInDurableObject(stub, async (_instance, state) => {
       const registry = createRegistry();
-      registry.tasks.add(DeliverScheduledInstruction);
+      registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
       const harness = await Harness.open(
         await openStorage(state),
         { models: createModels(), registry },
@@ -131,12 +166,11 @@ describe("Cloudflare Durable Object example", () => {
       );
       try {
         await harness.root(context, {
-          init: async (tx, conversationId) => {
-            Object.assign(await tx.doc(ConversationConfig, conversationId), {
+          init: (tx, conversationId) =>
+            configure(tx, conversationId, {
               thinkingLevel: "off",
-              activeTools: [],
-            });
-          },
+              tools: [],
+            }),
         });
         await harness.commit(
           (tx) =>
@@ -197,7 +231,7 @@ describe("Cloudflare Durable Object example", () => {
     const stub = env.SESSIONS.getByName(sessionId);
     await runInDurableObject(stub, async (_instance, state) => {
       const registry = createRegistry();
-      registry.tasks.add(DeliverScheduledInstruction);
+      registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
       const harness = await Harness.open(
         await openStorage(state),
         { models: createModels(), registry },
@@ -205,12 +239,11 @@ describe("Cloudflare Durable Object example", () => {
       );
       try {
         await harness.root(context, {
-          init: async (tx, conversationId) => {
-            Object.assign(await tx.doc(ConversationConfig, conversationId), {
+          init: (tx, conversationId) =>
+            configure(tx, conversationId, {
               thinkingLevel: "off",
-              activeTools: [],
-            });
-          },
+              tools: [],
+            }),
         });
         await harness.commit(
           (tx) =>

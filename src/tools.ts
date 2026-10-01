@@ -2,6 +2,8 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineDoc, type ToolRegistration } from "@earendil-works/pi-durable";
 import {
   DeliverScheduledInstruction,
+  nextRecurrenceRunAt,
+  type ScheduleRecurrence,
   type ScheduledInstruction,
   ScheduleDeliveries,
 } from "./schedule.ts";
@@ -49,7 +51,7 @@ type ScheduleArguments = {
   readonly instruction: string;
   readonly delaySeconds?: number;
   readonly at?: string;
-  readonly recurring?: boolean;
+  readonly recurrence?: ScheduleRecurrence;
   readonly sourceScheduleId?: string;
 };
 
@@ -67,6 +69,38 @@ function resolveRunAt({ delaySeconds, at }: ScheduleArguments, now: number): num
   return runAt;
 }
 
+function validateRecurrence(
+  recurrence: ScheduleRecurrence | undefined,
+): ScheduleRecurrence | undefined {
+  if (recurrence === undefined) return undefined;
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: recurrence.timezone }).format(0);
+  } catch (error) {
+    throw new Error("recurrence.timezone must be a valid IANA timezone", { cause: error });
+  }
+  return recurrence;
+}
+
+function copyScheduledInstruction(scheduled: ScheduledInstruction): ScheduledInstruction {
+  return {
+    id: scheduled.id,
+    conversationId: scheduled.conversationId,
+    instruction: scheduled.instruction,
+    runAt: scheduled.runAt,
+    ...(scheduled.recurrence === undefined
+      ? {}
+      : {
+          recurrence: {
+            cadence: {
+              unit: scheduled.recurrence.cadence.unit,
+              interval: scheduled.recurrence.cadence.interval,
+            },
+            timezone: scheduled.recurrence.timezone,
+          },
+        }),
+  };
+}
+
 const scheduleResult = (scheduled: ScheduledInstruction, now: number) => {
   const runAt = new Date(scheduled.runAt).toISOString();
   const seconds = Math.max(0, Math.round((scheduled.runAt - now) / 1000));
@@ -81,7 +115,7 @@ const scheduleResult = (scheduled: ScheduledInstruction, now: number) => {
       id: scheduled.id,
       instruction: scheduled.instruction,
       runAt,
-      ...(scheduled.recurring === true ? { recurring: true } : {}),
+      ...(scheduled.recurrence === undefined ? {} : { recurrence: scheduled.recurrence }),
     },
   };
 };
@@ -114,16 +148,29 @@ export function createScheduleTool(
             "Run at this ISO 8601 date-time with a timezone offset, e.g. 2026-10-01T09:00:00+02:00. Use for absolute times; provide exactly one of delaySeconds or at",
         }),
       ),
-      recurring: Type.Optional(
-        Type.Boolean({
-          description:
-            "Set true only when the user explicitly asked for a repeating schedule; each delivery then schedules its own next occurrence",
+      recurrence: Type.Optional(
+        Type.Object({
+          cadence: Type.Object({
+            unit: Type.Union([
+              Type.Literal("minute"),
+              Type.Literal("hour"),
+              Type.Literal("day"),
+              Type.Literal("week"),
+              Type.Literal("month"),
+            ]),
+            interval: Type.Integer({ minimum: 1, maximum: 10_000 }),
+          }),
+          timezone: Type.String({
+            minLength: 1,
+            maxLength: 100,
+            description: "IANA timezone, e.g. Europe/Vienna or America/New_York",
+          }),
         }),
       ),
       sourceScheduleId: Type.Optional(
         Type.String({
           description:
-            "When scheduling the next occurrence of a recurring instruction, the schedule ID given in its delivery",
+            "When scheduling the next occurrence of a recurring instruction, the schedule ID given in its delivery. Omit delaySeconds, at, and recurrence because the source determines them",
         }),
       ),
     }),
@@ -135,38 +182,84 @@ export function createScheduleTool(
         return scheduleResult(existing, Date.now());
       }
 
-      const deliveries = await api.snapshot(ScheduleDeliveries, context);
-      const activeDeliveries =
-        deliveries?.active.filter(({ conversationId }) => conversationId === api.conversationId) ??
-        [];
-      const source = activeDeliveries.find(
-        ({ scheduleId }) => scheduleId === args.sourceScheduleId,
-      );
-      if (activeDeliveries.length > 0 && !(source?.recurring === true && args.recurring === true)) {
-        throw new Error(
-          "schedule may run during a scheduled delivery only to schedule the next occurrence of a recurring instruction",
-        );
-      }
-
       const now = Date.now();
-      const scheduled: ScheduledInstruction = {
-        id: `schedule:${api.taskId}`,
-        conversationId: api.conversationId,
-        instruction: args.instruction,
-        runAt: resolveRunAt(args, now),
-        ...(args.recurring === true ? { recurring: true } : {}),
-      };
-      const persisted = await api.commit(async (tx) => {
-        const intent = await tx.doc(ScheduleIntent, api.taskId);
-        if (intent.scheduled !== undefined) return intent.scheduled;
-        await tx.createTask(DeliverScheduledInstruction, scheduled, {
-          ownership: { kind: "conversation" },
+      let persisted: ScheduledInstruction;
+      if (args.sourceScheduleId !== undefined) {
+        if (
+          args.delaySeconds !== undefined ||
+          args.at !== undefined ||
+          args.recurrence !== undefined
+        ) {
+          throw new Error(
+            "A recurring successor derives its deadline and recurrence from sourceScheduleId; omit delaySeconds, at, and recurrence",
+          );
+        }
+        persisted = await api.commit(async (tx) => {
+          const deliveries = await tx.doc(ScheduleDeliveries);
+          const source = deliveries.active.find(
+            (delivery) =>
+              delivery.conversationId === api.conversationId &&
+              delivery.scheduleId === args.sourceScheduleId,
+          );
+          if (source === undefined) {
+            throw new Error("sourceScheduleId does not identify an active scheduled delivery");
+          }
+          if (source.recurrence === undefined) {
+            throw new Error("the source schedule has no structured recurrence policy");
+          }
+          if (source.successor !== undefined) return copyScheduledInstruction(source.successor);
+          const sourceRecurrence: ScheduleRecurrence = {
+            cadence: {
+              unit: source.recurrence.cadence.unit,
+              interval: source.recurrence.cadence.interval,
+            },
+            timezone: source.recurrence.timezone,
+          };
+          const scheduled: ScheduledInstruction = {
+            id: `schedule:${api.taskId}`,
+            conversationId: api.conversationId,
+            instruction: source.instruction,
+            runAt: nextRecurrenceRunAt(source.runAt, sourceRecurrence, now),
+            recurrence: sourceRecurrence,
+          };
+          source.successor = scheduled;
+          await tx.createTask(DeliverScheduledInstruction, scheduled, {
+            ownership: { kind: "conversation" },
+            conversationId: api.conversationId,
+            background: true,
+          });
+          return scheduled;
+        }, context);
+      } else {
+        const recurrence = validateRecurrence(args.recurrence);
+        const requested: ScheduledInstruction = {
+          id: `schedule:${api.taskId}`,
           conversationId: api.conversationId,
-          background: true,
-        });
-        intent.scheduled = scheduled;
-        return scheduled;
-      }, context);
+          instruction: args.instruction,
+          runAt: resolveRunAt(args, now),
+          ...(recurrence === undefined ? {} : { recurrence }),
+        };
+        const deliveries = await api.snapshot(ScheduleDeliveries, context);
+        if (
+          deliveries?.active.some(({ conversationId }) => conversationId === api.conversationId) ===
+          true
+        ) {
+          throw new Error(
+            "schedule may run during a scheduled delivery only to create its recurring successor",
+          );
+        }
+        persisted = await api.commit(async (tx) => {
+          const intent = await tx.doc(ScheduleIntent, api.taskId);
+          if (intent.scheduled !== undefined) return intent.scheduled;
+          intent.scheduled = requested;
+          await tx.createTask(DeliverScheduledInstruction, requested, {
+            ownership: { kind: "conversation" },
+            conversationId: api.conversationId,
+            background: true,
+          });
+          return requested;
+        }, context);
+      }
       await scheduleCreated(persisted.runAt);
       return scheduleResult(persisted, now);
     },

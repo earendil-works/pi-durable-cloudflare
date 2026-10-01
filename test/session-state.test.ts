@@ -55,7 +55,7 @@ describe("session event reducer", () => {
             tools: [],
             compactions: [],
             inbox: [],
-            config: { thinkingLevel: "off", activeTools: [] },
+            agent: { thinkingLevel: "off", tools: [] },
             usage: { models: {}, tools: {} },
           },
         ],
@@ -66,7 +66,7 @@ describe("session event reducer", () => {
       entries: [{ role: "user", text: "Hello" }],
       live: { active: true, text: "Hel" },
       tools: [],
-      config: { thinkingLevel: "off", activeTools: [] },
+      agent: { thinkingLevel: "off", tools: [] },
       usage: { models: {}, tools: {} },
     });
 
@@ -139,7 +139,10 @@ describe("session event reducer", () => {
                     content: formatScheduledInstruction({
                       id: "schedule:3",
                       instruction: "Check again tomorrow",
-                      recurring: true,
+                      recurrence: {
+                        cadence: { unit: "day", interval: 1 },
+                        timezone: "Europe/Vienna",
+                      },
                     }),
                     timestamp: 2,
                   },
@@ -149,7 +152,7 @@ describe("session event reducer", () => {
             tools: [],
             compactions: [],
             inbox: [],
-            config: { thinkingLevel: "off", activeTools: ["schedule"] },
+            agent: { thinkingLevel: "off", tools: ["schedule"] },
             usage: { models: {}, tools: {} },
           },
         ],
@@ -211,7 +214,7 @@ describe("session event reducer", () => {
             tools: [],
             compactions: [],
             inbox: [],
-            config: { thinkingLevel: "off", activeTools: [] },
+            agent: { thinkingLevel: "off", tools: [] },
             usage: { models: {}, tools: {} },
           },
         ],
@@ -285,7 +288,7 @@ describe("session event reducer", () => {
             tools: [],
             compactions: [{ taskId: 8, reason: "threshold", blocking: false, attempt: 1 }],
             inbox: [],
-            config: { thinkingLevel: "off", activeTools: [] },
+            agent: { thinkingLevel: "off", tools: [] },
             usage: { models: {}, tools: {} },
           },
           { type: "compaction_start", taskId: 9, reason: "overflow", blocking: true },
@@ -438,7 +441,7 @@ describe("session event reducer", () => {
             tools: [],
             compactions: [],
             inbox: [],
-            config: { thinkingLevel: "off", activeTools: [] },
+            agent: { thinkingLevel: "off", tools: [] },
             usage: { models: {}, tools: {} },
           },
           {
@@ -462,11 +465,11 @@ describe("session event reducer", () => {
             output: { trimStart: 6, append: "ed" },
           },
           {
-            type: "config_changed",
-            config: {
+            type: "agent_changed",
+            agent: {
               model: { provider: "openai", modelId: "gpt-test" },
               thinkingLevel: "high",
-              activeTools: ["search"],
+              tools: ["search"],
             },
           },
           {
@@ -505,10 +508,10 @@ describe("session event reducer", () => {
           diagnostics: [{ severity: "info", message: "Using cached index" }],
         },
       ],
-      config: {
+      agent: {
         model: { provider: "openai", modelId: "gpt-test" },
         thinkingLevel: "high",
-        activeTools: ["search"],
+        tools: ["search"],
       },
       usage: {
         models: { "openai/gpt-test": { input: 10, output: 5, totalTokens: 15 } },
@@ -573,7 +576,7 @@ describe("session event reducer", () => {
             tools: [],
             compactions: [],
             inbox: [{ id: 5, mode: "followUp" }],
-            config: { thinkingLevel: "off", activeTools: [] },
+            agent: { thinkingLevel: "off", tools: [] },
             usage: { models: {}, tools: {} },
           },
         ],

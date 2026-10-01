@@ -33,7 +33,7 @@ describe("queued prompts", () => {
 
     try {
       const root = await harness.root(context);
-      await root.setModel({ provider: "faux", modelId: "faux-1" }, context);
+      await root.configure({ model: { provider: "faux", modelId: "faux-1" } }, context);
       const first = await root.submit(
         { type: "input", content: "First question", whenBusy: "followUp" },
         context,

@@ -5,33 +5,33 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@earendil-works/chord': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz
-  '@earendil-works/pi-agent-core': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-agent-core-0.99.1-9b3e0c78c129.tgz
-  '@earendil-works/pi-ai': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz
-  '@earendil-works/pi-client': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-client-0.99.1-c087959540b0.tgz
-  '@earendil-works/pi-codemode': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-codemode-0.99.1-51a966dd33eb.tgz
-  '@earendil-works/pi-coding-agent': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-coding-agent-0.99.1-1eec444c0d25.tgz
-  '@earendil-works/pi-durable': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.1-fdd634008646.tgz
-  '@earendil-works/pi-mcp': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-mcp-0.99.1-c2c4b7b86286.tgz
-  '@earendil-works/pi-protocol': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-protocol-0.99.1-294806324612.tgz
-  '@earendil-works/pi-server': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-server-0.99.1-ec2db15880f1.tgz
-  '@earendil-works/pi-session-backend-sqlite-node': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-session-backend-sqlite-node-0.99.1-58e4fb06a826.tgz
-  '@earendil-works/pi-telemetry': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.1-0287bf32f56e.tgz
-  '@earendil-works/pi-tui': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-tui-0.99.1-6715e6810126.tgz
+  '@earendil-works/chord': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz
+  '@earendil-works/pi-agent-core': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-agent-core-0.99.2-64a897c730f3.tgz
+  '@earendil-works/pi-ai': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz
+  '@earendil-works/pi-client': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-client-0.99.2-a9e086101544.tgz
+  '@earendil-works/pi-codemode': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-codemode-0.99.2-885f232efaf2.tgz
+  '@earendil-works/pi-coding-agent': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-coding-agent-0.99.2-8fd0a2cc2ea7.tgz
+  '@earendil-works/pi-durable': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.2-b0645c14546a.tgz
+  '@earendil-works/pi-mcp': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-mcp-0.99.2-5c7d2eca9966.tgz
+  '@earendil-works/pi-protocol': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-protocol-0.99.2-25b53bc26dd2.tgz
+  '@earendil-works/pi-server': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-server-0.99.2-ffe4be16a35d.tgz
+  '@earendil-works/pi-session-backend-sqlite-node': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-session-backend-sqlite-node-0.99.2-8b8905ad3d1e.tgz
+  '@earendil-works/pi-telemetry': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.2-0b3ed61a5d83.tgz
+  '@earendil-works/pi-tui': file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-tui-0.99.2-280d6f848c08.tgz
 
 importers:
 
   .:
     dependencies:
       '@earendil-works/chord':
-        specifier: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz
-        version: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz
+        specifier: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz
+        version: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz
       '@earendil-works/pi-ai':
-        specifier: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz
-        version: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)
+        specifier: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz
+        version: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-durable':
-        specifier: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.1-fdd634008646.tgz
-        version: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.1-fdd634008646.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)
+        specifier: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.2-b0645c14546a.tgz
+        version: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.2-b0645c14546a.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)
       partyserver:
         specifier: 0.5.10
         version: 0.5.10(@cloudflare/workers-types@5.20260928.1)
@@ -271,25 +271,25 @@ packages:
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
     engines: {node: '>=12'}
 
-  '@earendil-works/chord@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz':
-    resolution: {integrity: sha512-tnFNEPtE6JQGNVGXkyekdLldto9NSY7bx2UFFzUouo7Tjbn7T47osx9l35HZ46PvaaegoNDgg3FDSY2Wz8g0qA==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz}
-    version: 0.99.1
+  '@earendil-works/chord@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz':
+    resolution: {integrity: sha512-a3a39Y2h7Ku9EPYf1qigR2GTPijtL3zgbv0KQmVXTI468OsGfWF5+S3I4tapI6PCp9zEGlCKEhgiFqywxjYppg==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz}
+    version: 0.99.2
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-ai@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz':
-    resolution: {integrity: sha512-PUGsuvLNMMEJ2zHDaUke//f/0pSW9udNqJMaVu+PEPI1tnLGxcHkgY3/0c5qwnq3Y0wbIZEmvtdtK79K2L4Z6A==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz}
-    version: 0.99.1
+  '@earendil-works/pi-ai@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz':
+    resolution: {integrity: sha512-HDUgRW7BKklak+9vlqqjKYrOlIK6XkQ8QpRwIx2YuwruzXV9MfwOD1doLJK29XN8r9v4oWXzp5HeTbNtBtY6YQ==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz}
+    version: 0.99.2
     engines: {node: '>=22.19.0'}
     hasBin: true
 
-  '@earendil-works/pi-durable@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.1-fdd634008646.tgz':
-    resolution: {integrity: sha512-/dY0AIZGAIzWQGfYu52RrNSFbiDUOa924/LE8s7vb+Q3ZNrHwzioTmUfrNuPjDDhBcnTdw/6UmUnhzyji139aA==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.1-fdd634008646.tgz}
-    version: 0.99.1
+  '@earendil-works/pi-durable@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.2-b0645c14546a.tgz':
+    resolution: {integrity: sha512-sGRcFFRqJmpuixv1ql9BKCAp9n5Q+Gr9B+DI7QtSd/YMu2tvOFMMzCFCPXvHU7SyUFeU8I7NdMvfh5gb4oY3MA==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.2-b0645c14546a.tgz}
+    version: 0.99.2
     engines: {node: '>=22.19.0'}
 
-  '@earendil-works/pi-telemetry@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.1-0287bf32f56e.tgz':
-    resolution: {integrity: sha512-Aoe/MvVuLtv5a2otdCJZSTB5RybU5Lyp27tSkYGd39Ei0asJwdzmMrOVlpobynirCFX2fqdH4B1PVFvN2OMnKQ==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.1-0287bf32f56e.tgz}
-    version: 0.99.1
+  '@earendil-works/pi-telemetry@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.2-0b3ed61a5d83.tgz':
+    resolution: {integrity: sha512-Cz7WGl2DQWGAlBp5gH3ouDOMDhDevwbB2hwESmO2HWRu7/XV8vHnJCE72JMsGBRO1WSrejQpICR85NhtqnHI9w==, tarball: file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.2-0b3ed61a5d83.tgz}
+    version: 0.99.2
     engines: {node: '>=22.19.0'}
 
   '@emnapi/runtime@1.11.3':
@@ -2225,15 +2225,15 @@ snapshots:
     dependencies:
       '@jridgewell/trace-mapping': 0.3.9
 
-  '@earendil-works/chord@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz':
+  '@earendil-works/chord@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz':
     dependencies:
       esbuild: 0.28.2
 
-  '@earendil-works/pi-ai@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-ai@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.124.0(zod@4.4.3)
       '@aws-sdk/client-bedrock-runtime': 3.1127.0
-      '@earendil-works/pi-telemetry': file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.1-0287bf32f56e.tgz
+      '@earendil-works/pi-telemetry': file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.2-0b3ed61a5d83.tgz
       '@google/genai': 2.21.0(supports-color@10.2.2)
       '@smithy/node-http-handler': 4.12.1
       http-proxy-agent: 9.1.0(supports-color@10.2.2)
@@ -2254,10 +2254,10 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-durable@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.1-fdd634008646.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-durable@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.2-b0645c14546a.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)':
     dependencies:
-      '@earendil-works/chord': file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz
-      '@earendil-works/pi-ai': file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/chord': file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz
+      '@earendil-works/pi-ai': file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@7.29.0)(ws@8.21.0)(zod@4.4.3)
       diff: 8.0.4
       typebox: 1.3.27
     transitivePeerDependencies:
@@ -2273,7 +2273,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-telemetry@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.1-0287bf32f56e.tgz': {}
+  '@earendil-works/pi-telemetry@file:../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-telemetry-0.99.2-0b3ed61a5d83.tgz': {}
 
   '@emnapi/runtime@1.11.3':
     dependencies:

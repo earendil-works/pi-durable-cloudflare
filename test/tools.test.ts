@@ -6,7 +6,12 @@ import {
   fauxText,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import {
+  createRegistry,
+  defineExtension,
+  Harness,
+  MemoryStorage,
+} from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { DeliverScheduledInstruction } from "../src/schedule.ts";
 import { createScheduleTool, getWeatherTool } from "../src/tools.ts";
@@ -32,12 +37,20 @@ describe("custom tools", () => {
   it("creates durable delayed tasks before requesting their Durable Object alarms", async () => {
     const context = BACKGROUND_CONTEXT;
     const at = new Date(Date.now() + 30 * 60_000).toISOString();
+    const recurrence = {
+      cadence: { unit: "day", interval: 1 },
+      timezone: "Europe/Vienna",
+    } as const;
     const faux = fauxProvider();
     faux.setResponses([
       fauxAssistantMessage(
         [
           fauxToolCall("schedule", { instruction: "Check the oven", at }),
-          fauxToolCall("schedule", { instruction: "Look outside", delaySeconds: 5 }),
+          fauxToolCall("schedule", {
+            instruction: "Look outside",
+            delaySeconds: 5,
+            recurrence,
+          }),
         ],
         { stopReason: "toolUse" },
       ),
@@ -46,24 +59,30 @@ describe("custom tools", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    registry.tasks.add(DeliverScheduledInstruction);
     let harness: Harness;
     const tasksWhenCreated = new Map<number, unknown>();
-    registry.tools.add(
-      createScheduleTool(async (runAt) => {
-        tasksWhenCreated.set(
-          runAt,
-          (await harness.inspect(context)).tasks
-            .filter(({ record }) => record.kind === DeliverScheduledInstruction.definition.name)
-            .map(({ record }) => record.input),
-        );
+    const scheduleTool = createScheduleTool(async (runAt) => {
+      tasksWhenCreated.set(
+        runAt,
+        (await harness.inspect(context)).tasks
+          .filter(({ record }) => record.kind === DeliverScheduledInstruction.definition.name)
+          .map(({ record }) => record.input),
+      );
+    });
+    registry.install(
+      defineExtension({
+        name: "schedule",
+        tasks: [DeliverScheduledInstruction],
+        tools: [scheduleTool],
       }),
     );
     harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
     try {
       const root = await harness.root(context);
-      await root.setModel({ provider: "faux", modelId: "faux-1" }, context);
-      await root.setActiveTools(["schedule"], context);
+      await root.configure(
+        { model: { provider: "faux", modelId: "faux-1" }, tools: [scheduleTool] },
+        context,
+      );
 
       const before = Date.now();
       const submission = await root.submit({ type: "input", content: "Remind me twice" }, context);
@@ -88,6 +107,7 @@ describe("custom tools", () => {
             conversationId: root.id,
             instruction: "Look outside",
             runAt: expect.any(Number),
+            recurrence,
           },
         ]),
       );
@@ -115,6 +135,14 @@ describe("custom tools", () => {
       { instruction: "Neither" },
       { instruction: "Both", delaySeconds: 5, at: new Date(Date.now() + 60_000).toISOString() },
       { instruction: "Local time", at: "2099-01-01T09:00:00" },
+      {
+        instruction: "Invalid timezone",
+        delaySeconds: 5,
+        recurrence: {
+          cadence: { unit: "day", interval: 1 },
+          timezone: "Mars/Olympus_Mons",
+        },
+      },
       { instruction: "Past", at: new Date(Date.now() - 60_000).toISOString() },
     ];
     const faux = fauxProvider();
@@ -128,13 +156,21 @@ describe("custom tools", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    registry.tasks.add(DeliverScheduledInstruction);
-    registry.tools.add(createScheduleTool(async () => {}));
+    const scheduleTool = createScheduleTool(async () => {});
+    registry.install(
+      defineExtension({
+        name: "schedule",
+        tasks: [DeliverScheduledInstruction],
+        tools: [scheduleTool],
+      }),
+    );
     const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
     try {
       const root = await harness.root(context);
-      await root.setModel({ provider: "faux", modelId: "faux-1" }, context);
-      await root.setActiveTools(["schedule"], context);
+      await root.configure(
+        { model: { provider: "faux", modelId: "faux-1" }, tools: [scheduleTool] },
+        context,
+      );
 
       await (
         await root.submit({ type: "input", content: "Schedule these" }, context)

@@ -13,11 +13,19 @@ const RECURRENCE_NOTE_PREFIX = "\n\nThis instruction recurs.";
 export function formatScheduledInstruction(scheduled: {
   readonly id: string;
   readonly instruction: string;
-  readonly recurring?: true;
+  readonly recurrence?: {
+    readonly cadence: {
+      readonly unit: "minute" | "hour" | "day" | "week" | "month";
+      readonly interval: number;
+    };
+    readonly timezone: string;
+  };
 }): string {
   const text = `${SCHEDULED_INSTRUCTION_PREFIX}${scheduled.instruction}`;
-  if (scheduled.recurring !== true) return text;
-  return `${text}${RECURRENCE_NOTE_PREFIX} After carrying it out, schedule its next occurrence with recurring: true and sourceScheduleId ${JSON.stringify(scheduled.id)}.`;
+  if (scheduled.recurrence === undefined) return text;
+  const { interval, unit } = scheduled.recurrence.cadence;
+  const cadence = `${interval} ${unit}${interval === 1 ? "" : "s"}`;
+  return `${text}${RECURRENCE_NOTE_PREFIX} It repeats every ${cadence} in ${scheduled.recurrence.timezone}. After carrying it out, call schedule with this instruction and sourceScheduleId ${JSON.stringify(scheduled.id)}. Omit delaySeconds, at, and recurrence because the next UTC deadline and recurrence policy are derived from the source.`;
 }
 
 /** The instruction text of a scheduled delivery input, or `undefined` for ordinary input. */

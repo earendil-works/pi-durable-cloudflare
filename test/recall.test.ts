@@ -11,12 +11,14 @@ import {
   type Conversation,
   type ConversationId,
   createRegistry,
+  defineExtension,
   Harness,
   MemoryStorage,
 } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import {
   RECALL_TOOL_NAME,
+  recallSearchExtension,
   recallTool,
   searchConversations,
   searchConversationsTool,
@@ -31,8 +33,10 @@ async function openHarness(responses: readonly FauxResponseStep[]): Promise<Harn
   const models = createModels();
   models.setProvider(faux.provider);
   const registry = createRegistry();
-  registry.tools.add(recallTool);
-  registry.tools.add(searchConversationsTool);
+  registry.install(
+    defineExtension({ name: "recall", tools: [recallTool, searchConversationsTool] }),
+  );
+  registry.install(recallSearchExtension);
   return Harness.open(new MemoryStorage(), { models, registry }, context);
 }
 
@@ -61,7 +65,7 @@ describe("conversation search", () => {
     ]);
     try {
       const root = await harness.root(context);
-      await root.setModel(model, context);
+      await root.configure({ model }, context);
       const question = await ask(root, "Which DATABASE should we use?");
       const fork = await root.fork(question.answer, { ownership: { kind: "ownerless" } }, context);
       await ask(fork, "What about the weather?");
@@ -117,14 +121,13 @@ describe("recall subagent", () => {
     ]);
     try {
       const root = await harness.root(context);
-      await root.setModel(model, context);
+      await root.configure({ model }, context);
       await ask(root, "Let's decide on the database.");
       const asking = await harness.createConversation(
         { ownership: { kind: "ownerless" } },
         context,
       );
-      await asking.setModel(model, context);
-      await asking.setActiveTools([RECALL_TOOL_NAME], context);
+      await asking.configure({ model, tools: [recallTool] }, context);
 
       // The question mentions postgres, so a search that included the asking conversation would find it.
       await ask(asking, "Did we pick postgres?");
