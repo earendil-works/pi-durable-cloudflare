@@ -25,9 +25,9 @@ interface PendingPrompt {
 export interface PiSession {
   readonly status: ConnectionStatus;
   readonly conversations: readonly ConversationSummary[];
-  readonly activeConversationId?: number;
-  readonly activeConversation?: ConversationSnapshot;
-  readonly error?: string;
+  readonly activeConversationId: number | undefined;
+  readonly activeConversation: ConversationSnapshot | undefined;
+  readonly error: string | undefined;
   openConversation(conversationId: number): void;
   createConversation(): void;
   forkConversation(conversationId: number, entryId: number): void;
@@ -167,13 +167,16 @@ export function usePiSession(sessionId: string, initialConversationId?: number):
     [send],
   );
 
+  const activeConversation =
+    state.activeConversationId === undefined
+      ? undefined
+      : state.snapshots[state.activeConversationId];
+
   return {
     status: state.status,
     conversations: state.conversations,
     activeConversationId: state.activeConversationId,
-    ...(state.activeConversationId === undefined
-      ? {}
-      : { activeConversation: state.snapshots[state.activeConversationId] }),
+    activeConversation,
     error: state.error,
     openConversation,
     createConversation,

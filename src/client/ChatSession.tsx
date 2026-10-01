@@ -1,8 +1,9 @@
 import {
   type KeyboardEvent,
-  type SubmitEvent,
   type MouseEvent,
+  type SubmitEvent,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
@@ -44,8 +45,12 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
   const transcriptRef = useRef<HTMLElement | null>(null);
   const pinToLatestRef = useRef(true);
   const renderedConversationRef = useRef<number | undefined>(undefined);
-  const activeSummary = session.conversations.find(({ id }) => id === session.activeConversationId);
   const activeConversationId = session.activeConversationId;
+  const activeConversation = session.activeConversation;
+  const activeSummary = session.conversations.find(({ id }) => id === activeConversationId);
+  const isConnected = session.status === "connected";
+  const canSubmit =
+    isConnected && activeConversationId !== undefined && !submitting && draft.trim().length > 0;
 
   useLayoutEffect(() => {
     const transcript = transcriptRef.current;
@@ -58,29 +63,26 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
     if (pinToLatestRef.current) transcript.scrollTop = transcript.scrollHeight;
   });
 
+  const openLinkedConversation = useEffectEvent(() => {
+    const conversationId = conversationIdFromLocation() ?? ROOT_CONVERSATION_ID;
+    if (
+      conversationId !== activeConversationId &&
+      session.conversations.some(({ id }) => id === conversationId)
+    ) {
+      session.openConversation(conversationId);
+    }
+  });
+
   useEffect(() => {
-    const openLinkedConversation = (): void => {
-      const conversationId = conversationIdFromLocation() ?? ROOT_CONVERSATION_ID;
-      if (
-        conversationId !== session.activeConversationId &&
-        session.conversations.some(({ id }) => id === conversationId)
-      ) {
-        session.openConversation(conversationId);
-      }
-    };
-    window.addEventListener("popstate", openLinkedConversation);
-    return () => window.removeEventListener("popstate", openLinkedConversation);
-  }, [session.activeConversationId, session.conversations, session.openConversation]);
+    const handlePopState = (): void => openLinkedConversation();
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   const submit = async (event: SubmitEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const content = draft.trim();
-    if (
-      content.length === 0 ||
-      activeConversationId === undefined ||
-      session.status !== "connected" ||
-      submitting
-    ) {
+    if (content.length === 0 || activeConversationId === undefined || !isConnected || submitting) {
       return;
     }
     setSubmitting(true);
@@ -148,11 +150,7 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
         <nav className="conversation-navigation" aria-labelledby="conversations-heading">
           <div className="conversation-navigation-header">
             <h2 id="conversations-heading">Conversations</h2>
-            <button
-              type="button"
-              onClick={session.createConversation}
-              disabled={session.status !== "connected"}
-            >
+            <button type="button" onClick={session.createConversation} disabled={!isConnected}>
               New conversation
             </button>
           </div>
@@ -165,9 +163,7 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
                   <li key={conversation.id}>
                     <a
                       href={`?conversation=${conversation.id}`}
-                      aria-current={
-                        conversation.id === session.activeConversationId ? "page" : undefined
-                      }
+                      aria-current={conversation.id === activeConversationId ? "page" : undefined}
                       onClick={(event) => followConversationLink(event, conversation.id)}
                     >
                       {conversationLabel(conversation)}
@@ -185,8 +181,8 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
           <h2 id="transcript-heading">
             {activeSummary === undefined ? "Conversation" : conversationLabel(activeSummary)}
           </h2>
-          {session.activeConversation === undefined ? null : (
-            <ConversationDetails conversation={session.activeConversation} />
+          {activeConversation === undefined ? null : (
+            <ConversationDetails conversation={activeConversation} />
           )}
         </header>
 
@@ -198,17 +194,16 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
           tabIndex={0}
           onScroll={trackTranscriptPosition}
         >
-          {session.activeConversation === undefined ? (
+          {activeConversation === undefined ? (
             <p className="transcript-empty">Loading conversation…</p>
-          ) : session.activeConversation.entries.length === 0 &&
-            session.activeConversation.live === null ? (
+          ) : activeConversation.entries.length === 0 && activeConversation.live === null ? (
             <p className="transcript-empty">
               This conversation is empty. Send a message to begin. You can fork the conversation
               from any committed user or assistant message.
             </p>
           ) : (
             <ol className="transcript-list">
-              {session.activeConversation.entries.map((entry) => (
+              {activeConversation.entries.map((entry) => (
                 <li key={entry.id}>
                   <TranscriptMessage
                     entry={entry}
@@ -223,49 +218,45 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             </ol>
           )}
 
-          {session.activeConversation?.live === null ||
-          session.activeConversation?.live === undefined ? null : (
+          {activeConversation?.live === null || activeConversation?.live === undefined ? null : (
             <article
               className="transcript-message transcript-message--assistant transcript-message--live"
-              aria-busy={session.activeConversation.live.active}
+              aria-busy={activeConversation.live.active}
             >
               <header>
                 <strong>Assistant</strong>
               </header>
-              {session.activeConversation.live.text.length === 0 ? (
+              {activeConversation.live.text.length === 0 ? (
                 <p className="responding">Responding…</p>
               ) : (
-                <MessageText text={session.activeConversation.live.text} />
+                <MessageText text={activeConversation.live.text} />
               )}
-              {session.activeConversation.live.retry === undefined ? null : (
-                <p role="status">Retrying: {session.activeConversation.live.retry.error}</p>
+              {activeConversation.live.retry === undefined ? null : (
+                <p role="status">Retrying: {activeConversation.live.retry.error}</p>
               )}
             </article>
           )}
 
-          {session.activeConversation === undefined ||
-          session.activeConversation.tools.length === 0 ? null : (
-            <ToolActivity tools={session.activeConversation.tools} />
+          {activeConversation === undefined || activeConversation.tools.length === 0 ? null : (
+            <ToolActivity tools={activeConversation.tools} />
           )}
 
-          {session.activeConversation === undefined ||
-          session.activeConversation.compactions.length === 0 ? null : (
+          {activeConversation === undefined ||
+          activeConversation.compactions.length === 0 ? null : (
             <p className="compaction-status" role="status">
-              {compactionStatusText(session.activeConversation.compactions)}
+              {compactionStatusText(activeConversation.compactions)}
             </p>
           )}
 
-          {session.activeConversation?.failure === undefined ? null : (
+          {activeConversation?.failure === undefined ? null : (
             <p className="transcript-error" role="alert">
-              {session.activeConversation.failure.kind} failed:{" "}
-              {session.activeConversation.failure.message}
+              {activeConversation.failure.kind} failed: {activeConversation.failure.message}
             </p>
           )}
 
-          {session.activeConversation === undefined ||
-          session.activeConversation.queued.length === 0 ? null : (
+          {activeConversation === undefined || activeConversation.queued.length === 0 ? null : (
             <ol className="transcript-list queued-inputs" aria-label="Queued messages">
-              {session.activeConversation.queued.map((input) => (
+              {activeConversation.queued.map((input) => (
                 <li key={input.submissionId}>
                   <article className="transcript-message transcript-message--user transcript-message--queued">
                     <header>
@@ -292,17 +283,9 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             onChange={(event) => setDraft(event.currentTarget.value)}
             onKeyDown={submitWithKeyboardShortcut}
             aria-keyshortcuts="Meta+Enter Control+Enter"
-            disabled={session.status !== "connected" || session.activeConversationId === undefined}
+            disabled={!isConnected || activeConversationId === undefined}
           />
-          <button
-            type="submit"
-            disabled={
-              session.status !== "connected" ||
-              session.activeConversationId === undefined ||
-              submitting ||
-              draft.trim().length === 0
-            }
-          >
+          <button type="submit" disabled={!canSubmit}>
             {submitting ? "Sending…" : "Send"}
           </button>
         </form>
