@@ -1,6 +1,6 @@
 import {
-  type FormEvent,
-  Fragment,
+  type KeyboardEvent,
+  type SubmitEvent,
   type MouseEvent,
   useEffect,
   useLayoutEffect,
@@ -37,7 +37,7 @@ const conversationIdFromLocation = (): number | undefined => {
 };
 
 export function ChatSession({ sessionId }: ChatSessionProps) {
-  const initialConversationId = useRef(conversationIdFromLocation()).current;
+  const [initialConversationId] = useState(conversationIdFromLocation);
   const session = usePiSession(sessionId, initialConversationId);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -72,10 +72,17 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
     return () => window.removeEventListener("popstate", openLinkedConversation);
   }, [session.activeConversationId, session.conversations, session.openConversation]);
 
-  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const content = draft.trim();
-    if (content.length === 0 || activeConversationId === undefined) return;
+    if (
+      content.length === 0 ||
+      activeConversationId === undefined ||
+      session.status !== "connected" ||
+      submitting
+    ) {
+      return;
+    }
     setSubmitting(true);
     try {
       const accepted = await session.submitPrompt(activeConversationId, content);
@@ -91,6 +98,18 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
     const distanceFromLatest =
       transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
     pinToLatestRef.current = distanceFromLatest <= 48;
+  };
+
+  const submitWithKeyboardShortcut = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (
+      event.key !== "Enter" ||
+      (!event.metaKey && !event.ctrlKey) ||
+      event.nativeEvent.isComposing
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   };
 
   const followConversationLink = (
@@ -115,8 +134,8 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             pi-durable
           </a>
           <h1>Session</h1>
-          <p className="connection-status">
-            <output aria-live="polite">{statusLabel[session.status]}</output>
+          <p className="connection-status" role="status">
+            {statusLabel[session.status]}
           </p>
         </header>
 
@@ -175,6 +194,7 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
           ref={transcriptRef}
           className="transcript"
           aria-labelledby="transcript-heading"
+          role="log"
           tabIndex={0}
           onScroll={trackTranscriptPosition}
         >
@@ -270,6 +290,8 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             value={draft}
             placeholder="Send a message…"
             onChange={(event) => setDraft(event.currentTarget.value)}
+            onKeyDown={submitWithKeyboardShortcut}
+            aria-keyshortcuts="Meta+Enter Control+Enter"
             disabled={session.status !== "connected" || session.activeConversationId === undefined}
           />
           <button
@@ -410,16 +432,14 @@ function TranscriptMessage({
   readonly entry: TranscriptEntry;
   readonly onFork?: () => void;
 }) {
+  const timestamp = entry.timestamp === undefined ? undefined : new Date(entry.timestamp);
+
   return (
     <article className={`transcript-message transcript-message--${entry.role}`}>
       <header>
         <strong>{roleLabel[entry.role]}</strong>
-        {entry.timestamp === undefined ? null : (
-          <Fragment>
-            <time dateTime={new Date(entry.timestamp).toISOString()}>
-              {new Date(entry.timestamp).toLocaleString()}
-            </time>
-          </Fragment>
+        {timestamp === undefined ? null : (
+          <time dateTime={timestamp.toISOString()}>{timestamp.toLocaleString()}</time>
         )}
       </header>
       <MessageText text={entry.text} />

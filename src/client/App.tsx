@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type SubmitEvent, useState } from "react";
 import { ChatSession } from "./ChatSession.tsx";
 
 const sessionRoute = /^\/sessions\/([^/]+)\/?$/;
@@ -31,7 +31,7 @@ function LandingPage() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string>();
 
-  const createSession = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+  const createSession = async (event: SubmitEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     setCreating(true);
     setError(undefined);

@@ -146,6 +146,11 @@ body:has(.session-workspace) {
   gap: 0.5rem;
 }
 
+.transcript-message p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .transcript-message footer,
 .transcript-message--live,
 .tool-activity,
