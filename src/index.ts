@@ -1,18 +1,11 @@
-export { Session } from "./session.ts";
+import { routePartykitRequest } from "partyserver";
 
-const connectRoute = /^\/api\/sessions\/([^/]+)\/connect\/?$/;
+export { Session } from "./session.ts";
 
 const json = (body: unknown, status: number, headers?: HeadersInit): Response =>
   Response.json(body, { status, headers });
 
-const sessionIdFromMatch = (value: string): string | undefined => {
-  try {
-    const id = decodeURIComponent(value);
-    return id.length > 0 && id.length <= 128 ? id : undefined;
-  } catch {
-    return undefined;
-  }
-};
+const sessionSocketRoute = /^\/api\/sessions\/[^/]+\/?$/;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -26,15 +19,16 @@ export default {
       return json({ sessionId, url: `/sessions/${sessionId}` }, 201);
     }
 
-    const connect = connectRoute.exec(url.pathname);
-    if (connect !== null) {
+    if (sessionSocketRoute.test(url.pathname)) {
       if (request.method !== "GET") {
         return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
       }
-      const id = sessionIdFromMatch(connect[1]);
-      if (id === undefined) return json({ error: "Invalid session ID" }, 400);
-      // Demo-only surface: add authentication before exposing model-backed routes publicly.
-      return env.SESSIONS.getByName(id).fetch(request);
+      if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+        return json({ error: "WebSocket upgrade required" }, 426, { Upgrade: "websocket" });
+      }
+      // Demo-only surface: authenticate and rate limit before exposing model-backed rooms publicly.
+      const party = await routePartykitRequest(request, env, { prefix: "api" });
+      if (party !== null) return party;
     }
 
     return json({ error: "Not found" }, 404);

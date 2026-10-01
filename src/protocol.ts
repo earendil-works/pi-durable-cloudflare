@@ -76,6 +76,11 @@ export interface ConversationSummary {
 
 export type ClientCommand =
   | {
+      readonly type: "presence.typing";
+      readonly conversationId: number;
+      readonly typing: boolean;
+    }
+  | {
       readonly type: "conversation.open";
       readonly requestId: string;
       readonly conversationId: number;
@@ -96,7 +101,7 @@ export type ClientCommand =
       readonly conversationId: number;
       readonly content: string;
     };
-export type ClientCommandType = ClientCommand["type"];
+export type ClientCommandType = Exclude<ClientCommand["type"], "presence.typing">;
 
 export type CommandResult =
   | {
@@ -134,6 +139,11 @@ export type ServerEvent =
       readonly type: "conversation.inbox";
       readonly conversationId: number;
       readonly items: readonly QueuedInput[];
+    }
+  | {
+      readonly type: "presence.typing";
+      readonly conversationId: number;
+      readonly usernames: readonly string[];
     }
   | CommandResult
   | {
@@ -198,6 +208,17 @@ export function parseClientCommand(message: string): ClientCommand {
   }
   if (!isRecord(value) || typeof value.type !== "string") {
     throw new InvalidClientCommand("Message must be a command object");
+  }
+
+  if (value.type === "presence.typing") {
+    if (typeof value.typing !== "boolean") {
+      throw new InvalidClientCommand("typing must be a boolean");
+    }
+    return {
+      type: value.type,
+      conversationId: requireId(value.conversationId, "conversationId"),
+      typing: value.typing,
+    };
   }
 
   const requestId = requireRequestId(value.requestId);
@@ -309,6 +330,16 @@ export function parseServerEventEnvelope(message: string): ServerEvent {
         };
       });
       return { type: value.type, conversationId, items };
+    }
+    case "presence.typing": {
+      const conversationId = requireId(value.conversationId, "conversationId");
+      if (
+        !Array.isArray(value.usernames) ||
+        !value.usernames.every((username) => typeof username === "string")
+      ) {
+        throw new Error("Typing presence payload is invalid");
+      }
+      return { type: value.type, conversationId, usernames: value.usernames };
     }
     case "command.result": {
       const requestId = requireRequestId(value.requestId);

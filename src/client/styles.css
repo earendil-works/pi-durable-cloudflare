@@ -192,6 +192,12 @@ body:has(.session-workspace) {
   min-inline-size: 5rem;
 }
 
+.typing-indicator {
+  grid-column: 1 / -1;
+  min-block-size: 1.25em;
+  margin: 0;
+}
+
 .visually-hidden {
   position: absolute;
   inline-size: 1px;

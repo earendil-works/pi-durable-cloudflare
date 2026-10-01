@@ -7,7 +7,6 @@ import {
   type ConversationId,
   createRegistry,
   Harness,
-  type Harness as PiHarness,
   type Storage,
   type Tx,
 } from "@earendil-works/pi-durable";
@@ -30,7 +29,12 @@ function createChatRegistry(options: ChatHarnessOptions) {
   registry.tools.add(recallTool);
   // Registered for recall's child conversations; not in any default loadout.
   registry.tools.add(searchConversationsTool);
-  registry.systemPrompt.section("preamble", () => "You are a concise assistant.", { tag: false });
+  registry.systemPrompt.section(
+    "preamble",
+    () =>
+      "You are a concise assistant. User messages may begin with a display name in brackets; treat it as speaker attribution.",
+    { tag: false },
+  );
   registry.systemPrompt.section(
     "clock",
     // Minute precision: finer values would append a system-prompt delta on every request.
@@ -58,7 +62,7 @@ export function openChatHarness(
   storage: Storage,
   context: Context,
   options: ChatHarnessOptions,
-): Promise<PiHarness> {
+): Promise<Harness> {
   const registry = createChatRegistry(options);
   return Harness.open(
     storage,

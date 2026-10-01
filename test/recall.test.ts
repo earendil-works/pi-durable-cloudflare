@@ -12,7 +12,6 @@ import {
   type ConversationId,
   createRegistry,
   Harness,
-  type Harness as PiHarness,
   MemoryStorage,
 } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
@@ -26,7 +25,7 @@ import {
 const context = BACKGROUND_CONTEXT;
 const model = { provider: "faux", modelId: "faux-1" };
 
-async function openHarness(responses: readonly FauxResponseStep[]): Promise<PiHarness> {
+async function openHarness(responses: readonly FauxResponseStep[]): Promise<Harness> {
   const faux = fauxProvider();
   faux.setResponses([...responses]);
   const models = createModels();
@@ -47,7 +46,7 @@ async function ask(conversation: Conversation, content: string) {
 }
 
 /** Search as a tool call in `conversationId` would. */
-const searchFrom = (harness: PiHarness, conversationId: ConversationId, term: string) =>
+const searchFrom = (harness: Harness, conversationId: ConversationId, term: string) =>
   searchConversations(
     { commit: (change, commitContext) => harness.commit(change, commitContext), conversationId },
     term,

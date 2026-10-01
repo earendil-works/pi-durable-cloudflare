@@ -8,13 +8,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { type ConversationSummary, ROOT_CONVERSATION_ID } from "../protocol.ts";
+import {
+  MAX_PROMPT_CHARACTERS,
+  type ConversationSummary,
+  ROOT_CONVERSATION_ID,
+} from "../protocol.ts";
 import type { ToolDiagnostic } from "@earendil-works/pi-durable";
 import type { ConversationSnapshot, ToolProgress, TranscriptEntry } from "./session-state.ts";
 import { usePiSession } from "./usePiSession.ts";
 
 interface ChatSessionProps {
   readonly sessionId: string;
+  readonly username: string;
 }
 
 const conversationLabel = ({ id, parent, owner }: ConversationSummary): string => {
@@ -30,6 +35,14 @@ const statusLabel = {
   failed: "Connection failed",
 } as const;
 
+const TYPING_IDLE_MS = 1_500;
+
+const typingLabel = (usernames: readonly string[]): string => {
+  if (usernames.length === 1) return `${usernames[0]} is typing…`;
+  if (usernames.length === 2) return `${usernames[0]}, ${usernames[1]} are typing…`;
+  return usernames.length > 2 ? "Many are typing…" : "";
+};
+
 const conversationIdFromLocation = (): number | undefined => {
   const value = new URLSearchParams(window.location.search).get("conversation");
   if (value === null || !/^\d+$/.test(value)) return undefined;
@@ -37,20 +50,47 @@ const conversationIdFromLocation = (): number | undefined => {
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 };
 
-export function ChatSession({ sessionId }: ChatSessionProps) {
+export function ChatSession({ sessionId, username }: ChatSessionProps) {
   const [initialConversationId] = useState(conversationIdFromLocation);
-  const session = usePiSession(sessionId, initialConversationId);
+  const session = usePiSession(sessionId, username, initialConversationId);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const transcriptRef = useRef<HTMLElement | null>(null);
   const pinToLatestRef = useRef(true);
   const renderedConversationRef = useRef<number | undefined>(undefined);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const typingConversationRef = useRef<number | undefined>(undefined);
   const activeConversationId = session.activeConversationId;
   const activeConversation = session.activeConversation;
   const activeSummary = session.conversations.find(({ id }) => id === activeConversationId);
   const isConnected = session.status === "connected";
   const canSubmit =
     isConnected && activeConversationId !== undefined && !submitting && draft.trim().length > 0;
+
+  const stopTyping = (): void => {
+    if (typingTimeoutRef.current !== undefined) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = undefined;
+    const conversationId = typingConversationRef.current;
+    typingConversationRef.current = undefined;
+    if (conversationId !== undefined) session.setTyping(conversationId, false);
+  };
+
+  const updateDraft = (content: string): void => {
+    setDraft(content);
+    if (!isConnected || activeConversationId === undefined || content.length === 0) {
+      stopTyping();
+      return;
+    }
+    if (typingConversationRef.current !== activeConversationId) {
+      stopTyping();
+      typingConversationRef.current = activeConversationId;
+      session.setTyping(activeConversationId, true);
+    }
+    if (typingTimeoutRef.current !== undefined) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(stopTyping, TYPING_IDLE_MS);
+  };
+
+  useEffect(() => () => stopTyping(), [activeConversationId, isConnected]);
 
   useLayoutEffect(() => {
     const transcript = transcriptRef.current;
@@ -85,6 +125,7 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
     if (content.length === 0 || activeConversationId === undefined || !isConnected || submitting) {
       return;
     }
+    stopTyping();
     setSubmitting(true);
     try {
       const accepted = await session.submitPrompt(activeConversationId, content);
@@ -136,6 +177,9 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             pi-durable
           </a>
           <h1>Session</h1>
+          <p className="participant-name">
+            Joining as <strong>{username}</strong>
+          </p>
           <p className="connection-status" role="status">
             {statusLabel[session.status]}
           </p>
@@ -278,9 +322,10 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
             id="prompt"
             name="prompt"
             rows={3}
+            maxLength={MAX_PROMPT_CHARACTERS}
             value={draft}
             placeholder="Send a message…"
-            onChange={(event) => setDraft(event.currentTarget.value)}
+            onChange={(event) => updateDraft(event.currentTarget.value)}
             onKeyDown={submitWithKeyboardShortcut}
             aria-keyshortcuts="Meta+Enter Control+Enter"
             disabled={!isConnected || activeConversationId === undefined}
@@ -288,6 +333,9 @@ export function ChatSession({ sessionId }: ChatSessionProps) {
           <button type="submit" disabled={!canSubmit}>
             {submitting ? "Sending…" : "Send"}
           </button>
+          <p className="typing-indicator" aria-live="polite">
+            {typingLabel(activeConversation?.typing ?? [])}
+          </p>
         </form>
       </main>
     </div>

@@ -19,6 +19,8 @@
     "@earendil-works/chord": "file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.1-b6714d10fb44.tgz",
     "@earendil-works/pi-ai": "file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.1-3d41acbaf2cd.tgz",
     "@earendil-works/pi-durable": "file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.1-fdd634008646.tgz",
+    "partyserver": "0.5.10",
+    "partysocket": "1.3.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },

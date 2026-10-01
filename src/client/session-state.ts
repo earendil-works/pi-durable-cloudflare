@@ -74,6 +74,7 @@ export interface ConversationSnapshot {
   readonly compactions: readonly LiveCompaction[];
   /** Inputs submitted during a running turn, waiting to be placed after it. */
   readonly queued: readonly QueuedInput[];
+  readonly typing: readonly string[];
   readonly config?: Readonly<ConversationConfigState>;
   readonly usage?: Readonly<UsageState>;
   readonly failure?: {
@@ -149,6 +150,17 @@ function reduceServerEvent(state: SessionState, event: ServerEvent): SessionStat
         },
       };
     }
+    case "presence.typing": {
+      const before =
+        state.snapshots[event.conversationId] ?? emptyConversation(event.conversationId);
+      return {
+        ...state,
+        snapshots: {
+          ...state.snapshots,
+          [event.conversationId]: { ...before, typing: event.usernames },
+        },
+      };
+    }
     case "command.result":
       if (!event.ok) return { ...state, error: event.error.message };
       return event.conversationId === undefined ||
@@ -167,6 +179,7 @@ const emptyConversation = (id: number): ConversationSnapshot => ({
   tools: [],
   compactions: [],
   queued: [],
+  typing: [],
 });
 
 function reduceAgentEvent(
@@ -294,6 +307,7 @@ function snapshotConversation(
     config: event.config,
     usage: event.usage,
     queued: conversation.queued,
+    typing: conversation.typing,
     ...(partial === undefined ? {} : { partial }),
   };
 }

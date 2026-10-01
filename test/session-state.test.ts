@@ -587,6 +587,24 @@ describe("session event reducer", () => {
     expect(state.snapshots[1]?.queued).toEqual([]);
   });
 
+  it("tracks typing presence per conversation", () => {
+    let state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "presence.typing",
+        conversationId: 2,
+        usernames: ["Anne", "John"],
+      }),
+    });
+    expect(state.snapshots[2]?.typing).toEqual(["Anne", "John"]);
+
+    state = sessionReducer(state, {
+      type: "event",
+      event: event({ type: "presence.typing", conversationId: 2, usernames: [] }),
+    });
+    expect(state.snapshots[2]?.typing).toEqual([]);
+  });
+
   it("rejects malformed queued inputs", () => {
     expect(() =>
       event({

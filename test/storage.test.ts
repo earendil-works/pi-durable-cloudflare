@@ -8,7 +8,6 @@ import {
   type ConversationId,
   type EntryId,
   Harness,
-  type Harness as PiHarness,
   ROOT_CONVERSATION_ID,
   type SubmissionRecord,
   type Storage,
@@ -27,7 +26,7 @@ const openStorage = (state: DurableObjectState): Promise<SqliteStorage> =>
 async function openFauxHarness(
   storage: Storage,
   responses: readonly FauxResponseStep[],
-): Promise<PiHarness> {
+): Promise<Harness> {
   const models = createModels();
   const faux = fauxProvider();
   models.setProvider(faux.provider);
@@ -100,6 +99,13 @@ describe("Cloudflare Durable Object example", () => {
     await evictDurableObject(stub);
 
     let status: string | undefined;
+    const wake = await exports.default.fetch(`https://example.com/api/sessions/${sessionId}`, {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(wake.status).toBe(101);
+    wake.webSocket!.accept();
+    wake.webSocket!.close(1000, "test setup complete");
+
     for (let attempt = 0; attempt < 100 && status === undefined; attempt++) {
       status = await runInDurableObject(stub, async (_instance, state) => {
         const submission = await (
@@ -156,10 +162,9 @@ describe("Cloudflare Durable Object example", () => {
     });
     await evictDurableObject(stub);
 
-    const reopened = await exports.default.fetch(
-      `https://example.com/api/sessions/${sessionId}/connect`,
-      { headers: { Upgrade: "websocket" } },
-    );
+    const reopened = await exports.default.fetch(`https://example.com/api/sessions/${sessionId}`, {
+      headers: { Upgrade: "websocket" },
+    });
     expect(reopened.status).toBe(101);
     reopened.webSocket!.accept();
     reopened.webSocket!.close(1000, "test setup complete");

@@ -1,4 +1,4 @@
-import { DurableObject } from "cloudflare:workers";
+import { type Connection, type ConnectionContext, Server, type WSMessage } from "partyserver";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type AgentEventStream,
@@ -7,12 +7,13 @@ import {
   type ConversationRecord,
   type Cursor,
   type EntryId,
-  type Harness as PiHarness,
+  type Harness,
   InboxDoc,
   type TaskId,
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { normalizeUsername } from "./identity.ts";
 import { planHarnessAlarm } from "./schedule.ts";
 import { initializeConversation, openChatHarness } from "./chat.ts";
 import {
@@ -46,7 +47,21 @@ const reportError = (
 const RECOVERY_ALARM_DELAY_MS = 60_000;
 const CONVERSATION_PAGE_SIZE = 100;
 
-type SocketAttachment = { readonly conversationId: number };
+type SessionConnectionState = {
+  readonly username: string;
+  readonly conversationId?: number;
+  readonly typing?: true;
+};
+
+const usernameForConnection = (connection: Connection, request: Request): string => {
+  const requested = new URL(request.url).searchParams.get("username") ?? "";
+  const username = normalizeUsername(requested);
+  if (username.length > 0) return username;
+  const suffix = connection.id.replace(/[^a-z0-9]/giu, "").slice(0, 6) || "guest";
+  return `Guest-${suffix}`;
+};
+
+const attributedPrompt = (username: string, content: string): string => `[${username}]\n${content}`;
 
 const conversationSummary = (conversation: ConversationRecord): ConversationSummary => ({
   id: conversation.id,
@@ -63,60 +78,54 @@ const conversationSummary = (conversation: ConversationRecord): ConversationSumm
     : { owner: { conversationId: conversation.owner.conversationId } }),
 });
 
-export class Session extends DurableObject<Env> {
-  #harness!: PiHarness;
+export class Session extends Server<Env> {
+  static override options = { hibernate: true };
+
+  #harness!: Harness;
   readonly #eventStreams = new Map<WebSocket, AgentEventStream>();
+  readonly #typingConnections = new Set<WebSocket>();
   readonly #alarmTaskWatches = new Set<TaskId>();
   #watchTaskSettlements = false;
   #alarmUpdate: Promise<void> = Promise.resolve();
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    const ready = ctx.blockConcurrencyWhile(async () => {
-      const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(ctx.storage));
-      this.#harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
-        scheduleCreated: () => this.#refreshAlarm(),
-      });
-      // Tool calls create subagent conversations outside any socket command; announce them to every open sidebar.
-      this.#harness.subscribeCommits((publication) => {
-        const subagentCreated = publication.changes.some(
-          (change) => change.type === "conversation" && change.value.owner !== undefined,
-        );
-        if (!subagentCreated) return;
-        // Commit listeners must not call Session APIs; read the list after this listener returns.
-        queueMicrotask(() => {
-          this.#broadcastSessionSnapshot().catch((error: unknown) =>
-            reportError("Session snapshot broadcast failed", error),
-          );
-        });
-      });
-      await this.#restoreEventStreams();
-      await this.#refreshAlarm();
+  override async onStart(): Promise<void> {
+    const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(this.ctx.storage));
+    this.#harness = await openChatHarness(storage, BACKGROUND_CONTEXT, {
+      scheduleCreated: () => this.#refreshAlarm(),
     });
-    void ready
-      .then(async () => {
-        this.#watchTaskSettlements = true;
-        this.#harness.resume();
-        await this.#refreshAlarm();
-      })
-      .catch((error: unknown) => reportError("Harness recovery failed", error));
-  }
-
-  override async alarm(): Promise<void> {
+    // Tool calls create subagent conversations outside any socket command; announce them to every open sidebar.
+    this.#harness.subscribeCommits((publication) => {
+      const subagentCreated = publication.changes.some(
+        (change) => change.type === "conversation" && change.value.owner !== undefined,
+      );
+      if (!subagentCreated) return;
+      // Commit listeners must not call Session APIs; read the list after this listener returns.
+      queueMicrotask(() => {
+        this.#broadcastSessionSnapshot().catch((error: unknown) =>
+          reportError("Session snapshot broadcast failed", error),
+        );
+      });
+    });
+    await this.#restoreEventStreams();
+    await this.#refreshAlarm();
+    this.#watchTaskSettlements = true;
     this.#harness.resume();
     await this.#refreshAlarm();
   }
 
-  override async fetch(request: Request): Promise<Response> {
-    const pathname = new URL(request.url).pathname;
-    if (/^\/api\/sessions\/[^/]+\/connect\/?$/.test(pathname)) {
-      return this.#connect(request);
-    }
-
-    return json({ error: "Not found" }, 404);
+  override async onAlarm(): Promise<void> {
+    this.#harness.resume();
+    await this.#refreshAlarm();
   }
 
-  override async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+  override onRequest(): Response {
+    return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
+  }
+
+  override async onMessage(
+    socket: Connection<SessionConnectionState>,
+    message: WSMessage,
+  ): Promise<void> {
     if (typeof message !== "string") {
       this.#send(socket, {
         type: "error",
@@ -152,6 +161,7 @@ export class Session extends DurableObject<Env> {
       await this.#handleCommand(socket, command);
     } catch (error) {
       reportError("Session command failed", error, { command: command.type });
+      if (command.type === "presence.typing") return;
       this.#send(socket, {
         type: "command.result",
         command: command.type,
@@ -165,33 +175,40 @@ export class Session extends DurableObject<Env> {
     }
   }
 
-  override webSocketClose(socket: WebSocket): Promise<void> {
-    return this.#stopEventStream(socket);
+  override async onClose(socket: Connection<SessionConnectionState>): Promise<void> {
+    this.#setTyping(socket, false);
+    await this.#stopEventStream(socket);
   }
 
-  override webSocketError(socket: WebSocket, error: unknown): Promise<void> {
+  override async onError(
+    socket: Connection<SessionConnectionState>,
+    error: unknown,
+  ): Promise<void> {
     reportError("Session WebSocket failed", error);
-    return this.#stopEventStream(socket);
+    this.#setTyping(socket, false);
+    await this.#stopEventStream(socket);
   }
 
-  async #connect(request: Request): Promise<Response> {
-    if (request.method !== "GET") {
-      return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
-    }
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      return json({ error: "Expected a WebSocket upgrade" }, 426, { Upgrade: "websocket" });
-    }
-
+  override async onConnect(
+    server: Connection<SessionConnectionState>,
+    context: ConnectionContext,
+  ): Promise<void> {
     const root = await this.#harness.root(BACKGROUND_CONTEXT, { init: initializeConversation });
-    const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server);
+    server.setState({ username: usernameForConnection(server, context.request) });
     await this.#sendSessionSnapshot(server);
     await this.#watchConversation(server, root.id);
-    return new Response(null, { status: 101, webSocket: client });
   }
 
-  async #handleCommand(socket: WebSocket, command: ClientCommand): Promise<void> {
+  async #handleCommand(
+    socket: Connection<SessionConnectionState>,
+    command: ClientCommand,
+  ): Promise<void> {
     switch (command.type) {
+      case "presence.typing":
+        if (socket.state?.conversationId === command.conversationId) {
+          this.#setTyping(socket, command.typing);
+        }
+        return;
       case "conversation.open":
         await this.#requireConversation(command.conversationId as ConversationId);
         await this.#watchConversation(socket, command.conversationId as ConversationId);
@@ -239,6 +256,7 @@ export class Session extends DurableObject<Env> {
         return;
       }
       case "prompt.submit": {
+        this.#setTyping(socket, false);
         const conversation = await this.#requireConversation(
           command.conversationId as ConversationId,
         );
@@ -246,7 +264,7 @@ export class Session extends DurableObject<Env> {
         const submission = await conversation.submit(
           {
             type: "input",
-            content: command.content,
+            content: attributedPrompt(socket.state?.username ?? "Guest", command.content),
             requestId: command.requestId,
             // Queue behind a running turn instead of rejecting; the inbox places it after the current answer.
             whenBusy: "followUp",
@@ -276,7 +294,7 @@ export class Session extends DurableObject<Env> {
     return conversation;
   }
 
-  async #sendSessionSnapshot(socket: WebSocket): Promise<void> {
+  async #sendSessionSnapshot(socket: Connection<SessionConnectionState>): Promise<void> {
     this.#send(socket, {
       type: "session.snapshot",
       session: { conversations: await this.#sessionSnapshot() },
@@ -303,12 +321,19 @@ export class Session extends DurableObject<Env> {
     }, BACKGROUND_CONTEXT);
   }
 
-  async #watchConversation(socket: WebSocket, conversationId: ConversationId): Promise<void> {
+  async #watchConversation(
+    socket: Connection<SessionConnectionState>,
+    conversationId: ConversationId,
+    restoreTyping = false,
+  ): Promise<void> {
+    this.#setTyping(socket, false);
     await this.#stopEventStream(socket);
-    socket.serializeAttachment({});
+    const username = socket.state?.username ?? "Guest";
+    socket.setState({ username });
     const stream = await watchEvents(this.#harness, conversationId, BACKGROUND_CONTEXT);
     this.#eventStreams.set(socket, stream);
-    socket.serializeAttachment({ conversationId } satisfies SocketAttachment);
+    socket.setState({ username, conversationId, ...(restoreTyping ? { typing: true } : {}) });
+    if (restoreTyping) this.#typingConnections.add(socket);
     this.#send(socket, {
       type: "conversation.events",
       conversationId,
@@ -325,15 +350,19 @@ export class Session extends DurableObject<Env> {
     void stream.closed.finally(() => {
       if (this.#eventStreams.get(socket) === stream) this.#eventStreams.delete(socket);
     });
+    this.#broadcastTyping(conversationId);
   }
 
   /** Inbox events carry only submission IDs; the queued text lives in the conversation's `pi.inbox` document. */
-  async #sendInbox(socket: WebSocket, conversationId: ConversationId): Promise<void> {
+  async #sendInbox(
+    socket: Connection<SessionConnectionState>,
+    conversationId: ConversationId,
+  ): Promise<void> {
     const inbox = await this.#harness.snapshot(InboxDoc, conversationId, BACKGROUND_CONTEXT);
     this.#send(socket, { type: "conversation.inbox", conversationId, items: queuedInputs(inbox) });
   }
 
-  async #stopEventStream(socket: WebSocket): Promise<void> {
+  async #stopEventStream(socket: Connection<SessionConnectionState>): Promise<void> {
     const stream = this.#eventStreams.get(socket);
     if (stream === undefined) return;
     this.#eventStreams.delete(socket);
@@ -341,28 +370,62 @@ export class Session extends DurableObject<Env> {
   }
 
   async #restoreEventStreams(): Promise<void> {
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as Partial<SocketAttachment> | null;
+    for (const socket of this.getConnections<SessionConnectionState>()) {
+      const attachment = socket.state;
       if (
         attachment !== null &&
         typeof attachment.conversationId === "number" &&
         Number.isSafeInteger(attachment.conversationId) &&
         attachment.conversationId > 0
       ) {
-        await this.#watchConversation(socket, attachment.conversationId as ConversationId);
+        const conversationId = attachment.conversationId as ConversationId;
+        await this.#watchConversation(socket, conversationId, attachment.typing === true);
       }
     }
   }
 
   #broadcast(event: ServerEvent): void {
-    const message = JSON.stringify(event);
-    for (const socket of this.ctx.getWebSockets()) {
-      if (socket.readyState === WebSocket.OPEN) socket.send(message);
-    }
+    this.broadcast(JSON.stringify(event));
   }
 
-  #send(socket: WebSocket, event: ServerEvent): void {
+  #send(socket: Connection<SessionConnectionState>, event: ServerEvent): void {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+  }
+
+  #setTyping(socket: Connection<SessionConnectionState>, typing: boolean): void {
+    const state = socket.state;
+    if (state === null || state.conversationId === undefined) return;
+    const conversationId = state.conversationId;
+    const changed = typing
+      ? !this.#typingConnections.has(socket)
+      : this.#typingConnections.delete(socket);
+    if (typing) this.#typingConnections.add(socket);
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.setState({
+        username: state.username,
+        conversationId,
+        ...(typing ? { typing: true } : {}),
+      });
+    }
+    if (changed) this.#broadcastTyping(conversationId as ConversationId);
+  }
+
+  #broadcastTyping(conversationId: ConversationId): void {
+    const connections = [...this.getConnections<SessionConnectionState>()].filter(
+      (connection) => connection.state?.conversationId === conversationId,
+    );
+    const typers = connections.filter((connection) => this.#typingConnections.has(connection));
+    for (const receiver of connections) {
+      const usernames = [
+        ...new Set(
+          typers
+            .filter((connection) => connection !== receiver)
+            .map((connection) => connection.state?.username)
+            .filter((username): username is string => username !== undefined),
+        ),
+      ].sort((left, right) => left.localeCompare(right));
+      this.#send(receiver, { type: "presence.typing", conversationId, usernames });
+    }
   }
 
   #refreshAlarm(): Promise<void> {
