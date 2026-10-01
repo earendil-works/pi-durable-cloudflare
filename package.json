@@ -16,9 +16,9 @@
     "test": "vitest --run"
   },
   "dependencies": {
-    "@earendil-works/chord": "file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-chord-0.99.2-6b76b7f58da1.tgz",
-    "@earendil-works/pi-ai": "file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-ai-0.99.2-1c3520456ec1.tgz",
-    "@earendil-works/pi-durable": "file:./../../.herdr/worktrees/pi/preview-packages/.artifacts/pi-packages/tarballs/earendil-works-pi-durable-0.99.2-b0645c14546a.tgz",
+    "@earendil-works/chord": "1.0.0",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-durable": "1.0.0",
     "partyserver": "0.5.10",
     "partysocket": "1.3.0",
     "react": "^19.3.0",

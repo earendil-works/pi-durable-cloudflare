@@ -43,24 +43,10 @@ The project also runs pi-durable's reusable storage conformance and benchmark su
 
 ## Install
 
-Pi packages are unpublished preview builds. Build them into a local artifact set from a Pi checkout, then point this project at it:
+Install the published pi-durable 1.0 packages:
 
 ```sh
-# In the Pi checkout
-npm run pack:packages -- --out .artifacts/pi-packages
-node scripts/use-local-packages.mjs \
-  --manifest .artifacts/pi-packages/manifest.json \
-  --consumer <path-to-this-project> \
-  --package @earendil-works/pi-durable \
-  --package @earendil-works/pi-ai \
-  --package @earendil-works/chord \
-  --package-manager pnpm
-```
-
-This rewrites the `package.json` dependencies and `pnpm-workspace.yaml` overrides to the generated tarballs. Then, in this project:
-
-```sh
-pnpm install --ignore-scripts
+pnpm install
 ```
 
 ## Commands
