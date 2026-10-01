@@ -58,6 +58,12 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
   const transcriptRef = useRef<HTMLElement | null>(null);
   const pinToLatestRef = useRef(true);
   const renderedConversationRef = useRef<number | undefined>(undefined);
+  const transcriptHeightRef = useRef(0);
+  const autoScrollingRef = useRef(false);
+  const autoScrollFrameRef = useRef<number | undefined>(undefined);
+  const autoScrollStartRef = useRef(0);
+  const autoScrollTargetRef = useRef(0);
+  const autoScrollStartedAtRef = useRef(0);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const typingConversationRef = useRef<number | undefined>(undefined);
   const activeConversationId = session.activeConversationId;
@@ -90,18 +96,70 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
     typingTimeoutRef.current = setTimeout(stopTyping, TYPING_IDLE_MS);
   };
 
+  const stopAutoScroll = (): void => {
+    if (autoScrollFrameRef.current !== undefined) cancelAnimationFrame(autoScrollFrameRef.current);
+    autoScrollFrameRef.current = undefined;
+    autoScrollingRef.current = false;
+  };
+
+  const followLatest = (transcript: HTMLElement): void => {
+    const target = Math.max(0, transcript.scrollHeight - transcript.clientHeight);
+    if (Math.abs(target - transcript.scrollTop) <= 1) {
+      transcript.scrollTop = target;
+      stopAutoScroll();
+      return;
+    }
+    autoScrollStartRef.current = transcript.scrollTop;
+    autoScrollTargetRef.current = target;
+    autoScrollStartedAtRef.current = performance.now();
+    if (autoScrollFrameRef.current !== undefined) return;
+    autoScrollingRef.current = true;
+    const step = (time: number): void => {
+      const elapsed = time - autoScrollStartedAtRef.current;
+      const progress = Math.min(elapsed / 180, 1);
+      const eased = progress * progress * (3 - 2 * progress);
+      const start = autoScrollStartRef.current;
+      const target = autoScrollTargetRef.current;
+      transcript.scrollTop = start + (target - start) * eased;
+      if (progress >= 1 || Math.abs(target - transcript.scrollTop) <= 1) {
+        transcript.scrollTop = target;
+        autoScrollFrameRef.current = undefined;
+        autoScrollingRef.current = false;
+        return;
+      }
+      autoScrollFrameRef.current = requestAnimationFrame(step);
+    };
+    autoScrollFrameRef.current = requestAnimationFrame(step);
+  };
+
   useEffect(() => () => stopTyping(), [activeConversationId, isConnected]);
 
   useLayoutEffect(() => {
     const transcript = transcriptRef.current;
     if (transcript === null) return;
 
-    if (renderedConversationRef.current !== activeConversationId) {
+    const conversationChanged = renderedConversationRef.current !== activeConversationId;
+    const previousHeight = transcriptHeightRef.current;
+    transcriptHeightRef.current = transcript.scrollHeight;
+    if (conversationChanged) {
       renderedConversationRef.current = activeConversationId;
       pinToLatestRef.current = true;
+      stopAutoScroll();
+      transcript.scrollTop = transcript.scrollHeight;
+      return;
     }
-    if (pinToLatestRef.current) transcript.scrollTop = transcript.scrollHeight;
+    if (!pinToLatestRef.current || transcript.scrollHeight === previousHeight) return;
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      stopAutoScroll();
+      transcript.scrollTop = transcript.scrollHeight;
+      return;
+    }
+
+    followLatest(transcript);
   });
+
+  useEffect(() => () => stopAutoScroll(), []);
 
   const openLinkedConversation = useEffectEvent(() => {
     const conversationId = conversationIdFromLocation() ?? ROOT_CONVERSATION_ID;
@@ -137,10 +195,14 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
 
   const trackTranscriptPosition = (): void => {
     const transcript = transcriptRef.current;
-    if (transcript === null) return;
+    if (transcript === null || autoScrollingRef.current) return;
     const distanceFromLatest =
       transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight;
     pinToLatestRef.current = distanceFromLatest <= 48;
+  };
+
+  const interruptAutoScroll = (): void => {
+    if (autoScrollingRef.current) stopAutoScroll();
   };
 
   const submitWithKeyboardShortcut = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -237,13 +299,16 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
           role="log"
           tabIndex={0}
           onScroll={trackTranscriptPosition}
+          onWheel={interruptAutoScroll}
+          onTouchStart={interruptAutoScroll}
+          onPointerDown={interruptAutoScroll}
         >
           {activeConversation === undefined ? (
             <p className="transcript-empty">Loading conversation…</p>
           ) : activeConversation.entries.length === 0 && activeConversation.live === null ? (
             <p className="transcript-empty">
-              This conversation is empty. Send a message to begin. You can fork the conversation
-              from any committed user or assistant message.
+              Send a message to begin. You can fork the conversation from any user or assistant
+              message.
             </p>
           ) : (
             <TranscriptList
@@ -264,7 +329,18 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
               aria-busy={activeConversation.live.active}
             >
               <header>
-                <strong>Assistant</strong>
+                <div className="transcript-message-title">
+                  <strong>Assistant</strong>
+                </div>
+                <button
+                  className="text-button transcript-fork transcript-fork--placeholder"
+                  type="button"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  disabled
+                >
+                  Fork
+                </button>
               </header>
               {activeConversation.live.text.length === 0 ? (
                 <p className="responding">Responding…</p>

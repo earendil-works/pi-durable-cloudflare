@@ -34,7 +34,12 @@ function render(
   onFork?: (entryId: number) => void,
 ): string {
   return renderToStaticMarkup(
-    createElement(TranscriptList, { entries, tools, runActive: true, onFork }),
+    createElement(TranscriptList, {
+      entries,
+      tools,
+      runActive: true,
+      onFork,
+    }),
   );
 }
 

@@ -128,6 +128,8 @@ body:has(.session-workspace) {
 }
 
 .transcript {
+  --transcript-entry-gap: 0.875rem;
+
   min-block-size: 0;
   overflow-y: auto;
   overflow-anchor: none;
@@ -144,7 +146,7 @@ body:has(.session-workspace) {
 
 .transcript-list {
   display: grid;
-  gap: 0.875rem;
+  gap: var(--transcript-entry-gap);
 }
 
 .transcript-turn {
@@ -241,13 +243,20 @@ body:has(.session-workspace) {
   white-space: nowrap;
 }
 
+.transcript-fork--placeholder {
+  visibility: hidden;
+}
+
 .transcript-message p {
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
-.transcript-message--live,
+.transcript-message--live {
+  margin-block-start: var(--transcript-entry-gap);
+}
+
 .compaction-status,
 .transcript-error {
   margin-block-start: 1rem;
