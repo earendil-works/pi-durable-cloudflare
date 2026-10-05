@@ -9,6 +9,7 @@ import type {
   MessageChange,
   SnapshotEvent,
   ToolDiagnostic,
+  TaskGraph,
   UsageState,
 } from "@earendil-works/pi-durable";
 import { CompactionEntry, ResetEntry, ToolResultEntry } from "@earendil-works/pi-durable";
@@ -105,6 +106,7 @@ export interface SessionState {
   readonly conversations: readonly ConversationSummary[];
   readonly activeConversationId?: number;
   readonly snapshots: Readonly<Record<number, ConversationSnapshot>>;
+  readonly activity?: TaskGraph;
   readonly error?: string;
 }
 
@@ -144,7 +146,22 @@ function reduceServerEvent(state: SessionState, event: ServerEvent): SessionStat
       const activeConversationId = selectedStillExists
         ? state.activeConversationId
         : (conversations.find(({ id }) => id === ROOT_CONVERSATION_ID)?.id ?? conversations[0]?.id);
-      return { ...state, conversations, activeConversationId };
+      return {
+        ...state,
+        conversations,
+        activeConversationId,
+        ...(event.session.activity === undefined ? {} : { activity: event.session.activity }),
+      };
+    }
+    case "conversation.created": {
+      const conversations = [
+        ...state.conversations.filter(({ id }) => id !== event.conversation.id),
+        event.conversation,
+      ].sort((left, right) => left.id - right.id);
+      return { ...state, conversations };
+    }
+    case "session.activity": {
+      return { ...state, activity: event.activity };
     }
     case "conversation.events": {
       const before =

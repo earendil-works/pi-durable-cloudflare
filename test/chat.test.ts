@@ -402,11 +402,14 @@ describe("chat application", () => {
 
     const session = await messages.next<{
       type: string;
-      session: { conversations: Array<{ id: number }> };
+      session: {
+        conversations: Array<{ id: number }>;
+        activity: { tasks: Record<string, unknown> };
+      };
     }>();
     expect(session).toEqual({
       type: "session.snapshot",
-      session: { conversations: [{ id: 1 }] },
+      session: { conversations: [{ id: 1 }], activity: { tasks: {} } },
     });
 
     const conversation = await messages.next<{
@@ -761,10 +764,27 @@ describe("chat application", () => {
     const socket = response.webSocket!;
     const messages = jsonMessages(socket);
     socket.accept();
-    await expect(messages.next()).resolves.toEqual({
+    const snapshot = await messages.next<{
+      type: string;
+      session: {
+        conversations: unknown[];
+        activity: { tasks: Record<string, unknown> };
+      };
+    }>();
+    expect(snapshot).toMatchObject({
       type: "session.snapshot",
-      session: { conversations: [{ id: 1 }, { id: childId, owner: { conversationId: 1 } }] },
+      session: {
+        conversations: [{ id: 1 }, { id: childId, owner: { conversationId: 1 } }],
+      },
     });
+    expect(Object.values(snapshot.session.activity.tasks)).toEqual([
+      expect.objectContaining({
+        kind: "app.deliver-scheduled-instruction",
+        conversationId: 1,
+        background: true,
+        conversations: [childId],
+      }),
+    ]);
     socket.close(1000, "test complete");
   });
 });

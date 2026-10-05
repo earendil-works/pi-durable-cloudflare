@@ -13,7 +13,7 @@ Pi Durable is experimental, so its APIs may still change.
 - Reconnect without losing committed transcripts or queued prompts.
 - Schedule one-time or recurring follow-ups.
 - Ask a recall subagent about earlier conversations.
-- Watch model output, tool calls, and background activity as they happen.
+- Open Activity to inspect live task ownership, waits, tool calls, and background work while conversations run.
 
 This is a sample, not a production service. It intentionally has no authentication or rate limiting.
 

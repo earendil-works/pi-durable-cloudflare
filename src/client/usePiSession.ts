@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import type { TaskGraph } from "@earendil-works/pi-durable";
 import PartySocket from "partysocket";
 import {
   MAX_PROMPT_CHARACTERS,
@@ -8,12 +9,8 @@ import {
   type ConnectionStatus,
   type ConversationSummary,
 } from "../protocol.ts";
+import { CommandOutbox, type RetriableCommand } from "./command-outbox.ts";
 import { initialSessionState, sessionReducer, type ConversationSnapshot } from "./session-state.ts";
-
-interface PendingPrompt {
-  readonly command: Extract<ClientCommand, { readonly type: "prompt.submit" }>;
-  readonly resolve: (accepted: boolean) => void;
-}
 
 const terminalProtocolClose = (code: number): boolean => code === 1002 || code === 1009;
 
@@ -22,6 +19,7 @@ export interface PiSession {
   readonly conversations: readonly ConversationSummary[];
   readonly activeConversationId: number | undefined;
   readonly activeConversation: ConversationSnapshot | undefined;
+  readonly activity: TaskGraph | undefined;
   readonly error: string | undefined;
   openConversation(conversationId: number): void;
   createConversation(): void;
@@ -37,7 +35,9 @@ export function usePiSession(
 ): PiSession {
   const [state, dispatch] = useReducer(sessionReducer, initialSessionState);
   const socketRef = useRef<PartySocket | null>(null);
-  const pendingPromptRef = useRef<PendingPrompt | null>(null);
+  const outboxRef = useRef<CommandOutbox | null>(null);
+  outboxRef.current ??= new CommandOutbox();
+  const outbox = outboxRef.current;
   const selectedConversationRef = useRef(initialConversationId ?? ROOT_CONVERSATION_ID);
 
   useEffect(() => {
@@ -60,8 +60,6 @@ export function usePiSession(
       conversationOpened = false;
       dispatch({ type: "connection", status: "connected" });
       dispatch({ type: "clear-error" });
-      const pending = pendingPromptRef.current;
-      if (pending !== null) socket.send(JSON.stringify(pending.command));
     });
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
@@ -115,20 +113,19 @@ export function usePiSession(
             );
           }
         }
+        // Restore the previous watch first. Replayed create/fork commands then leave the server
+        // watching the newest acknowledged conversation rather than the pre-disconnect one.
+        outbox.replay((command) => socket.send(JSON.stringify(command)));
       }
-      if (
-        parsed.type === "command.result" &&
-        parsed.ok &&
-        parsed.conversationId !== undefined &&
-        (parsed.command === "conversation.create" || parsed.command === "conversation.fork")
-      ) {
-        selectedConversationRef.current = parsed.conversationId;
-      }
-      if (parsed.type === "command.result" && parsed.command === "prompt.submit") {
-        const pending = pendingPromptRef.current;
-        if (pending?.command.requestId === parsed.requestId) {
-          pendingPromptRef.current = null;
-          pending.resolve(parsed.ok);
+      if (parsed.type === "command.result") {
+        const acknowledged = outbox.acknowledge(parsed);
+        if (
+          acknowledged !== undefined &&
+          parsed.ok &&
+          parsed.conversationId !== undefined &&
+          (acknowledged.type === "conversation.create" || acknowledged.type === "conversation.fork")
+        ) {
+          selectedConversationRef.current = parsed.conversationId;
         }
       }
     });
@@ -145,9 +142,7 @@ export function usePiSession(
       }
       if (terminal) {
         if (socketRef.current === socket) socketRef.current = null;
-        const pending = pendingPromptRef.current;
-        pendingPromptRef.current = null;
-        pending?.resolve(false);
+        outbox.clear();
         dispatch({ type: "connection", status: "failed" });
         dispatch({ type: "error", message: failureMessage });
       } else {
@@ -157,13 +152,11 @@ export function usePiSession(
 
     return () => {
       disposed = true;
-      const pending = pendingPromptRef.current;
-      pendingPromptRef.current = null;
-      pending?.resolve(false);
+      outbox.clear();
       socket.close(1000, "Session view closed");
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [sessionId, username]);
+  }, [outbox, sessionId, username]);
 
   const send = useCallback((command: ClientCommand): boolean => {
     const socket = socketRef.current;
@@ -176,6 +169,16 @@ export function usePiSession(
     return true;
   }, []);
 
+  const sendRetriable = useCallback(
+    (command: RetriableCommand, complete?: (accepted: boolean) => void): boolean => {
+      outbox.enqueue(command, complete);
+      if (send(command)) return true;
+      outbox.cancel(command.requestId);
+      return false;
+    },
+    [outbox, send],
+  );
+
   const openConversation = useCallback(
     (conversationId: number) => {
       selectedConversationRef.current = conversationId;
@@ -186,19 +189,19 @@ export function usePiSession(
   );
 
   const createConversation = useCallback(() => {
-    send({ type: "conversation.create", requestId: crypto.randomUUID() });
-  }, [send]);
+    sendRetriable({ type: "conversation.create", requestId: crypto.randomUUID() });
+  }, [sendRetriable]);
 
   const forkConversation = useCallback(
     (conversationId: number, entryId: number) => {
-      send({
+      sendRetriable({
         type: "conversation.fork",
         requestId: crypto.randomUUID(),
         conversationId,
         entryId,
       });
     },
-    [send],
+    [sendRetriable],
   );
 
   const setTyping = useCallback((conversationId: number, typing: boolean) => {
@@ -222,7 +225,7 @@ export function usePiSession(
         });
         return Promise.resolve(false);
       }
-      if (pendingPromptRef.current !== null) {
+      if (outbox.has("prompt.submit")) {
         throw new Error("A prompt submission is already pending");
       }
       const command = {
@@ -232,14 +235,10 @@ export function usePiSession(
         content,
       } satisfies Extract<ClientCommand, { readonly type: "prompt.submit" }>;
       return new Promise((resolve) => {
-        pendingPromptRef.current = { command, resolve };
-        if (!send(command)) {
-          pendingPromptRef.current = null;
-          resolve(false);
-        }
+        sendRetriable(command, resolve);
       });
     },
-    [send],
+    [outbox, sendRetriable],
   );
 
   const activeConversation =
@@ -252,6 +251,7 @@ export function usePiSession(
     conversations: state.conversations,
     activeConversationId: state.activeConversationId,
     activeConversation,
+    activity: state.activity,
     error: state.error,
     openConversation,
     createConversation,

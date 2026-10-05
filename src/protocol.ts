@@ -1,4 +1,10 @@
-import type { AgentEvent, InboxState } from "@earendil-works/pi-durable";
+import type {
+  AgentEvent,
+  InboxState,
+  TaskGraph,
+  TaskGraphNode,
+  TaskGraphState,
+} from "@earendil-works/pi-durable";
 
 export const ROOT_CONVERSATION_ID = 1;
 export const MAX_PROMPT_CHARACTERS = 100_000;
@@ -136,7 +142,16 @@ export type ServerEvent =
       readonly type: "session.snapshot";
       readonly session: {
         readonly conversations: readonly ConversationSummary[];
+        readonly activity?: TaskGraph;
       };
+    }
+  | {
+      readonly type: "conversation.created";
+      readonly conversation: ConversationSummary;
+    }
+  | {
+      readonly type: "session.activity";
+      readonly activity: TaskGraph;
     }
   | {
       readonly type: "conversation.events";
@@ -205,6 +220,102 @@ const requireError = (value: unknown): { readonly code: string; readonly message
     throw new Error("Server error payload is invalid");
   }
   return { code: value.code, message: value.message };
+};
+
+const TASK_OUTCOMES = new Set(["completed", "failed", "aborted", "orphaned", "faulted"]);
+
+const taskGraphState = (value: unknown): TaskGraphState => {
+  if (!isRecord(value) || typeof value.status !== "string") {
+    throw new Error("Activity task state is invalid");
+  }
+  if (value.status === "pending" || value.status === "running") {
+    if (typeof value.phase !== "string") throw new Error("Activity task phase is invalid");
+    return { status: value.status, phase: value.phase };
+  }
+  if (value.status === "waiting") {
+    if (
+      typeof value.phase !== "string" ||
+      !Array.isArray(value.on) ||
+      (value.policy !== "failFast" && value.policy !== "allSettled")
+    ) {
+      throw new Error("Activity waiting task state is invalid");
+    }
+    return {
+      status: value.status,
+      phase: value.phase,
+      on: value.on.map((id) => requireId(id, "activity.task.state.on")) as unknown as Extract<
+        TaskGraphState,
+        { status: "waiting" }
+      >["on"],
+      policy: value.policy,
+    };
+  }
+  if (value.status === "completing") {
+    if (typeof value.outcome !== "string" || !TASK_OUTCOMES.has(value.outcome)) {
+      throw new Error("Activity completing task outcome is invalid");
+    }
+    return {
+      status: value.status,
+      outcome: value.outcome as Extract<TaskGraphState, { status: "completing" }>["outcome"],
+    };
+  }
+  throw new Error("Activity task status is invalid");
+};
+
+const parseTaskGraph = (value: unknown): TaskGraph => {
+  if (!isRecord(value) || !isRecord(value.tasks)) throw new Error("Activity graph is invalid");
+  const tasks: Record<string, TaskGraphNode> = {};
+  for (const [key, candidate] of Object.entries(value.tasks)) {
+    if (
+      !isRecord(candidate) ||
+      typeof candidate.kind !== "string" ||
+      typeof candidate.background !== "boolean" ||
+      typeof candidate.abortRequested !== "boolean" ||
+      !Array.isArray(candidate.conversations)
+    ) {
+      throw new Error("Activity task is invalid");
+    }
+    const id = requireId(candidate.id, "activity.task.id");
+    if (key !== String(id)) throw new Error("Activity task key does not match its id");
+    const owner = optionalId(candidate.owner, "activity.task.owner");
+    tasks[key] = {
+      id: id as TaskGraphNode["id"],
+      kind: candidate.kind,
+      conversationId: requireId(
+        candidate.conversationId,
+        "activity.task.conversationId",
+      ) as TaskGraphNode["conversationId"],
+      ...(owner === undefined ? {} : { owner: owner as NonNullable<TaskGraphNode["owner"]> }),
+      background: candidate.background,
+      abortRequested: candidate.abortRequested,
+      state: taskGraphState(candidate.state),
+      conversations: candidate.conversations.map((conversationId) =>
+        requireId(conversationId, "activity.task.conversations"),
+      ) as unknown as TaskGraphNode["conversations"],
+    };
+  }
+  return { tasks };
+};
+
+const parseConversationSummary = (value: unknown): ConversationSummary => {
+  if (!isRecord(value)) throw new Error("Conversation summary is invalid");
+  const summary: { -readonly [K in keyof ConversationSummary]: ConversationSummary[K] } = {
+    id: requireId(value.id, "conversation.id"),
+  };
+  if (value.parent !== undefined) {
+    if (!isRecord(value.parent)) throw new Error("Conversation parent is invalid");
+    summary.parent = {
+      conversationId: requireId(value.parent.conversationId, "conversation.parent.conversationId"),
+      at: requireId(value.parent.at, "conversation.parent.at"),
+    };
+  }
+  if (value.owner !== undefined) {
+    if (!isRecord(value.owner)) throw new Error("Conversation owner is invalid");
+    summary.owner = {
+      conversationId: requireId(value.owner.conversationId, "conversation.owner.conversationId"),
+    };
+  }
+  return summary;
 };
 
 export function parseClientCommand(message: string): ClientCommand {
@@ -277,35 +388,21 @@ export function parseServerEventEnvelope(message: string): ServerEvent {
       if (!isRecord(value.session) || !Array.isArray(value.session.conversations)) {
         throw new Error("Session snapshot payload is invalid");
       }
-      const conversations = value.session.conversations.map((conversation) => {
-        if (!isRecord(conversation)) throw new Error("Conversation summary is invalid");
-        const id = requireId(conversation.id, "conversation.id");
-        const summary: { -readonly [K in keyof ConversationSummary]: ConversationSummary[K] } = {
-          id,
-        };
-        if (conversation.parent !== undefined) {
-          if (!isRecord(conversation.parent)) throw new Error("Conversation parent is invalid");
-          summary.parent = {
-            conversationId: requireId(
-              conversation.parent.conversationId,
-              "conversation.parent.conversationId",
-            ),
-            at: requireId(conversation.parent.at, "conversation.parent.at"),
-          };
-        }
-        if (conversation.owner !== undefined) {
-          if (!isRecord(conversation.owner)) throw new Error("Conversation owner is invalid");
-          summary.owner = {
-            conversationId: requireId(
-              conversation.owner.conversationId,
-              "conversation.owner.conversationId",
-            ),
-          };
-        }
-        return summary;
-      });
-      return { type: value.type, session: { conversations } };
+      const conversations = value.session.conversations.map(parseConversationSummary);
+      return {
+        type: value.type,
+        session: {
+          conversations,
+          ...(value.session.activity === undefined
+            ? {}
+            : { activity: parseTaskGraph(value.session.activity) }),
+        },
+      };
     }
+    case "conversation.created":
+      return { type: value.type, conversation: parseConversationSummary(value.conversation) };
+    case "session.activity":
+      return { type: value.type, activity: parseTaskGraph(value.activity) };
     case "conversation.events": {
       const conversationId = requireId(value.conversationId, "conversationId");
       if (

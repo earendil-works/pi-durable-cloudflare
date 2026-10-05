@@ -1,4 +1,5 @@
 import { type Connection, type ConnectionContext, Server, type WSMessage } from "partyserver";
+import type { AttachedReplicatedState } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type AgentEventStream,
@@ -10,6 +11,7 @@ import {
   type EntryId,
   Harness,
   InboxDoc,
+  type TaskGraph,
   type TaskId,
   watchEvents,
 } from "@earendil-works/pi-durable";
@@ -27,6 +29,7 @@ import {
   type ServerEvent,
 } from "./protocol.ts";
 import { createCloudflareSqliteDatabase } from "./sqlite.ts";
+import { KeyedSerialQueue } from "./serial.ts";
 
 const json = (body: unknown, status: number, headers?: HeadersInit): Response =>
   Response.json(body, { status, headers });
@@ -108,43 +111,56 @@ export class Session extends Server<Env> {
   static override options = { hibernate: true };
 
   #harness!: Harness;
+  #activity!: AttachedReplicatedState<TaskGraph>;
   readonly #eventStreams = new Map<WebSocket, AgentEventStream>();
   readonly #typingConnections = new Set<WebSocket>();
+  readonly #connectionOperations = new KeyedSerialQueue<WebSocket>();
   readonly #alarmTaskWatches = new Set<TaskId>();
-  #watchTaskSettlements = false;
   #alarmUpdate: Promise<void> = Promise.resolve();
 
   override async onStart(): Promise<void> {
-    const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(this.ctx.storage));
-    this.#harness = await Harness.open(
-      storage,
-      createChatHarnessOptions({
-        scheduleCreated: () => this.#refreshAlarm(),
-      }),
-      BACKGROUND_CONTEXT,
-    );
-    // Tool calls create subagent conversations outside any socket command; announce them to every open sidebar.
-    this.#harness.subscribeCommits((publication) => {
-      const subagentCreated = publication.changes.some(
-        (change) => change.type === "conversation" && change.value.owner !== undefined,
+    let harness: Harness | undefined;
+    let activity: AttachedReplicatedState<TaskGraph> | undefined;
+    try {
+      const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(this.ctx.storage));
+      harness = await Harness.open(
+        storage,
+        createChatHarnessOptions({
+          scheduleCreated: () => this.#refreshAlarm(),
+        }),
+        BACKGROUND_CONTEXT,
       );
-      if (!subagentCreated) return;
-      // Commit listeners must not call Session APIs; read the list after this listener returns.
-      queueMicrotask(() => {
-        this.#broadcastSessionSnapshot().catch((error: unknown) =>
-          reportError("Session snapshot broadcast failed", error),
-        );
+      this.#harness = harness;
+      activity = await harness.taskGraph(BACKGROUND_CONTEXT);
+      this.#activity = activity;
+      activity.subscribe((value, _context, delivery) => {
+        if (delivery.kind === "update")
+          this.#broadcast({ type: "session.activity", activity: value });
       });
-    });
-    await this.#restoreEventStreams();
-    await this.#refreshAlarm();
-    this.#watchTaskSettlements = true;
-    this.#harness.resume();
-    await this.#refreshAlarm();
+      // Subagents are created by background tool tasks, not client commands.
+      // Notify connected clients when their conversation records are committed.
+      harness.subscribeCommits((publication) => {
+        for (const change of publication.changes) {
+          if (change.type !== "conversation" || change.value.owner === undefined) continue;
+          this.#broadcast({
+            type: "conversation.created",
+            conversation: conversationSummary(change.value),
+          });
+        }
+      });
+      await this.#restoreEventStreams();
+      await this.#refreshAlarm();
+    } catch (error) {
+      activity?.dispose();
+      this.#eventStreams.clear();
+      this.#typingConnections.clear();
+      this.#alarmTaskWatches.clear();
+      if (harness !== undefined) await harness.close(BACKGROUND_CONTEXT);
+      throw error;
+    }
   }
 
   override async onAlarm(): Promise<void> {
-    this.#harness.resume();
     await this.#refreshAlarm();
   }
 
@@ -152,7 +168,14 @@ export class Session extends Server<Env> {
     return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
   }
 
-  override async onMessage(
+  override onMessage(
+    socket: Connection<SessionConnectionState>,
+    message: WSMessage,
+  ): Promise<void> {
+    return this.#connectionOperations.run(socket, () => this.#processMessage(socket, message));
+  }
+
+  async #processMessage(
     socket: Connection<SessionConnectionState>,
     message: WSMessage,
   ): Promise<void> {
@@ -205,18 +228,19 @@ export class Session extends Server<Env> {
     }
   }
 
-  override async onClose(socket: Connection<SessionConnectionState>): Promise<void> {
-    this.#setTyping(socket, false);
-    await this.#stopEventStream(socket);
+  override onClose(socket: Connection<SessionConnectionState>): Promise<void> {
+    return this.#connectionOperations.run(socket, async () => {
+      this.#setTyping(socket, false);
+      await this.#stopEventStream(socket);
+    });
   }
 
-  override async onError(
-    socket: Connection<SessionConnectionState>,
-    error: unknown,
-  ): Promise<void> {
-    reportError("Session WebSocket failed", error);
-    this.#setTyping(socket, false);
-    await this.#stopEventStream(socket);
+  override onError(socket: Connection<SessionConnectionState>, error: unknown): Promise<void> {
+    return this.#connectionOperations.run(socket, async () => {
+      reportError("Session WebSocket failed", error);
+      this.#setTyping(socket, false);
+      await this.#stopEventStream(socket);
+    });
   }
 
   override async onConnect(
@@ -363,14 +387,14 @@ export class Session extends Server<Env> {
   async #sendSessionSnapshot(socket: Connection<SessionConnectionState>): Promise<void> {
     this.#send(socket, {
       type: "session.snapshot",
-      session: { conversations: await this.#sessionSnapshot() },
+      session: { conversations: await this.#sessionSnapshot(), activity: this.#activity.value },
     });
   }
 
   async #broadcastSessionSnapshot(): Promise<void> {
     this.#broadcast({
       type: "session.snapshot",
-      session: { conversations: await this.#sessionSnapshot() },
+      session: { conversations: await this.#sessionSnapshot(), activity: this.#activity.value },
     });
   }
 
@@ -498,9 +522,6 @@ export class Session extends Server<Env> {
     return this.#serializeAlarmUpdate(async () => {
       const inspection = await this.#harness.inspect(BACKGROUND_CONTEXT);
       const plan = planHarnessAlarm(inspection.tasks, Date.now());
-      if (this.#watchTaskSettlements) {
-        for (const taskId of plan.recoveryTasks) this.#refreshAlarmWhenTaskSettles(taskId);
-      }
       const recovery =
         plan.recoveryTasks.length > 0 ? Date.now() + RECOVERY_ALARM_DELAY_MS : undefined;
       const next =
@@ -510,6 +531,8 @@ export class Session extends Server<Env> {
             ? plan.nextDeadline
             : Math.min(plan.nextDeadline, recovery);
       await this.#replaceAlarm(next);
+      // waitForTask starts the scheduler, so persist its recovery alarm first.
+      for (const taskId of plan.recoveryTasks) this.#refreshAlarmWhenTaskSettles(taskId);
     });
   }
 

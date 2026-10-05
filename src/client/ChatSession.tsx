@@ -14,6 +14,7 @@ import {
   ROOT_CONVERSATION_ID,
 } from "../protocol.ts";
 import type { ConversationSnapshot } from "./session-state.ts";
+import { ActivityPanel } from "./ActivityPanel.tsx";
 import { MessageText, TranscriptList } from "./Transcript.tsx";
 import { usePiSession } from "./usePiSession.ts";
 
@@ -55,6 +56,10 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
   const session = usePiSession(sessionId, username, initialConversationId);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const activityToggleRef = useRef<HTMLButtonElement | null>(null);
+  const activityCloseRef = useRef<HTMLButtonElement | null>(null);
+  const conversationHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const transcriptRef = useRef<HTMLElement | null>(null);
   const pinToLatestRef = useRef(true);
   const renderedConversationRef = useRef<number | undefined>(undefined);
@@ -69,6 +74,7 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
   const activeConversationId = session.activeConversationId;
   const activeConversation = session.activeConversation;
   const activeSummary = session.conversations.find(({ id }) => id === activeConversationId);
+  const activityCount = Object.keys(session.activity?.tasks ?? {}).length;
   const isConnected = session.status === "connected";
   const canSubmit =
     isConnected && activeConversationId !== undefined && !submitting && draft.trim().length > 0;
@@ -231,8 +237,23 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
     }
   };
 
+  const compactActivityLayout = (): boolean => window.matchMedia("(width < 75rem)").matches;
+
+  const toggleActivity = (): void => {
+    const opening = !activityOpen;
+    setActivityOpen(opening);
+    if (opening && compactActivityLayout()) {
+      requestAnimationFrame(() => activityCloseRef.current?.focus());
+    }
+  };
+
+  const closeActivity = (): void => {
+    setActivityOpen(false);
+    requestAnimationFrame(() => activityToggleRef.current?.focus());
+  };
+
   return (
-    <div className="session-workspace">
+    <div className={`session-workspace${activityOpen ? " session-workspace--activity-open" : ""}`}>
       <aside className="session-sidebar">
         <header className="session-header">
           <a className="product-link" href="/">
@@ -284,9 +305,21 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
 
       <main className="conversation-view">
         <header className="conversation-header">
-          <h2 id="transcript-heading">
-            {activeSummary === undefined ? "Conversation" : conversationLabel(activeSummary)}
-          </h2>
+          <div className="conversation-titlebar">
+            <h2 ref={conversationHeadingRef} id="transcript-heading" tabIndex={-1}>
+              {activeSummary === undefined ? "Conversation" : conversationLabel(activeSummary)}
+            </h2>
+            <button
+              ref={activityToggleRef}
+              className="activity-toggle"
+              type="button"
+              aria-controls="activity-panel"
+              aria-expanded={activityOpen}
+              onClick={toggleActivity}
+            >
+              Activity <span aria-hidden="true">{activityCount}</span>
+            </button>
+          </div>
           {activeConversation === undefined ? null : (
             <ConversationDetails conversation={activeConversation} />
           )}
@@ -409,6 +442,23 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
           </p>
         </form>
       </main>
+
+      <ActivityPanel
+        graph={session.activity}
+        activeConversationId={activeConversationId}
+        onClose={closeActivity}
+        closeButtonRef={activityCloseRef}
+        onOpenConversation={(conversationId) => {
+          if (conversationId !== session.activeConversationId) {
+            window.history.pushState(null, "", `?conversation=${conversationId}`);
+            session.openConversation(conversationId);
+          }
+          if (compactActivityLayout()) {
+            setActivityOpen(false);
+            requestAnimationFrame(() => conversationHeadingRef.current?.focus());
+          }
+        }}
+      />
     </div>
   );
 }

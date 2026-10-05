@@ -402,6 +402,61 @@ describe("session event reducer", () => {
     expect(state.activeConversationId).toBe(4);
   });
 
+  it("tracks the session activity graph from snapshots and updates", () => {
+    let state = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "session.snapshot",
+        session: {
+          conversations: [{ id: 1 }],
+          activity: {
+            tasks: {
+              "4": {
+                id: 4,
+                kind: "pi.generation",
+                conversationId: 1,
+                background: false,
+                abortRequested: false,
+                state: { status: "running", phase: "stream" },
+                conversations: [],
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    expect(state.activity?.tasks["4"]).toMatchObject({
+      kind: "pi.generation",
+      state: { status: "running", phase: "stream" },
+    });
+
+    state = sessionReducer(state, {
+      type: "event",
+      event: event({ type: "session.activity", activity: { tasks: {} } }),
+    });
+    expect(state.activity).toEqual({ tasks: {} });
+
+    expect(() =>
+      event({
+        type: "session.activity",
+        activity: {
+          tasks: {
+            "4": {
+              id: 5,
+              kind: "pi.generation",
+              conversationId: 1,
+              background: false,
+              abortRequested: false,
+              state: { status: "running", phase: "stream" },
+              conversations: [],
+            },
+          },
+        },
+      }),
+    ).toThrow("Activity task key does not match its id");
+  });
+
   it("keeps conversation owners in the session snapshot", () => {
     const state = sessionReducer(initialSessionState, {
       type: "event",
@@ -417,6 +472,25 @@ describe("session event reducer", () => {
         session: { conversations: [{ id: 7, owner: { conversationId: "1" } }] },
       }),
     ).toThrow("conversation.owner.conversationId must be a positive integer");
+  });
+
+  it("adds a committed subagent conversation without replacing the session snapshot", () => {
+    const initial = sessionReducer(initialSessionState, {
+      type: "event",
+      event: event({
+        type: "session.snapshot",
+        session: { conversations: [{ id: 1 }] },
+      }),
+    });
+    const state = sessionReducer(initial, {
+      type: "event",
+      event: event({
+        type: "conversation.created",
+        conversation: { id: 7, owner: { conversationId: 1 } },
+      }),
+    });
+
+    expect(state.conversations).toEqual([{ id: 1 }, { id: 7, owner: { conversationId: 1 } }]);
   });
 
   it("rejects command results without a valid command discriminator", () => {
