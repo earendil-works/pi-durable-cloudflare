@@ -2,7 +2,6 @@ import {
   type ConversationId,
   defineDoc,
   defineTask,
-  type TaskId,
   type TaskInspection,
 } from "@earendil-works/pi-durable";
 import { formatScheduledInstruction } from "./protocol.ts";
@@ -305,30 +304,4 @@ export function scheduledDeadline(task: TaskInspection): number | undefined {
   if (phase === "wait") return runAt as number;
   if (phase === "deliver") return undefined;
   throw new Error(`Scheduled instruction task ${task.record.id} has an invalid phase`);
-}
-
-export type HarnessAlarmPlan = {
-  readonly nextDeadline?: number;
-  readonly recoveryTasks: readonly TaskId[];
-};
-
-/** Project live Harness tasks onto the Durable Object's single platform alarm. */
-export function planHarnessAlarm(tasks: readonly TaskInspection[], now: number): HarnessAlarmPlan {
-  let nextDeadline: number | undefined;
-  const recoveryTasks: TaskId[] = [];
-
-  for (const task of tasks) {
-    if (task.state.kind === "blocked") continue;
-    const deadline = scheduledDeadline(task);
-    if (deadline !== undefined && deadline > now && !task.record.abortRequested) {
-      nextDeadline = nextDeadline === undefined ? deadline : Math.min(nextDeadline, deadline);
-    } else {
-      recoveryTasks.push(task.record.id);
-    }
-  }
-
-  return {
-    ...(nextDeadline === undefined ? {} : { nextDeadline }),
-    recoveryTasks,
-  };
 }

@@ -14,11 +14,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { describe, expect, it, vi } from "vitest";
 import { formatScheduledInstruction } from "../src/protocol.ts";
-import {
-  DeliverScheduledInstruction,
-  planHarnessAlarm,
-  ScheduleDeliveries,
-} from "../src/schedule.ts";
+import { DeliverScheduledInstruction, ScheduleDeliveries } from "../src/schedule.ts";
 import { createScheduleTool } from "../src/tools.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -37,9 +33,9 @@ describe("scheduled instructions", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    let schedulesCreated = 0;
+    let wakeupsRequested = 0;
     const scheduleTool = createScheduleTool(async () => {
-      schedulesCreated++;
+      wakeupsRequested++;
     });
     registry.install(
       defineExtension({
@@ -74,7 +70,7 @@ describe("scheduled instructions", () => {
       await harness.waitForTask(delivery, context);
 
       expect(await harness.snapshot(ScheduleDeliveries, context)).toEqual({ active: [] });
-      expect(schedulesCreated).toBe(0);
+      expect(wakeupsRequested).toBe(0);
       expect((await root.context(context)).messages).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -122,9 +118,9 @@ describe("scheduled instructions", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    let schedulesCreated = 0;
+    let wakeupsRequested = 0;
     const scheduleTool = createScheduleTool(async () => {
-      schedulesCreated++;
+      wakeupsRequested++;
     });
     registry.install(
       defineExtension({
@@ -178,7 +174,7 @@ describe("scheduled instructions", () => {
       expect(next.runAt).toBeGreaterThanOrEqual(now + 59_000);
       expect(next.runAt).toBeLessThanOrEqual(Date.now() + 60_000);
       expect(await harness.snapshot(ScheduleDeliveries, context)).toEqual({ active: [] });
-      expect(schedulesCreated).toBe(2);
+      expect(wakeupsRequested).toBe(2);
       const messages = (await root.context(context)).messages;
       const toolResults = messages.filter(
         (message): message is Extract<(typeof messages)[number], { role: "toolResult" }> =>
@@ -356,39 +352,6 @@ describe("scheduled instructions", () => {
       await harness.waitForTask(delivery, context);
 
       expect(await harness.snapshot(ScheduleDeliveries, context)).toEqual({ active: [] });
-    } finally {
-      await harness.close(context);
-    }
-  });
-
-  it("plans one infrastructure alarm from delayed and active Harness tasks", async () => {
-    const now = Date.now();
-    const registry = createRegistry();
-    registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
-    const harness = await Harness.open(
-      new MemoryStorage(),
-      { models: createModels(), registry },
-      context,
-    );
-    try {
-      const root = await harness.root(context);
-      await root.commit(async (tx) => {
-        for (const [id, runAt] of [
-          ["schedule:later", now + 20_000],
-          ["schedule:sooner", now + 10_000],
-          ["schedule:due", now - 1],
-        ] as const) {
-          await tx.createTask(
-            DeliverScheduledInstruction,
-            { id, conversationId: root.id, instruction: id, runAt },
-            { ownership: { kind: "conversation" }, background: true },
-          );
-        }
-      }, context);
-
-      const plan = planHarnessAlarm((await harness.inspect(context)).tasks, now);
-      expect(plan.nextDeadline).toBe(now + 10_000);
-      expect(plan.recoveryTasks).toHaveLength(1);
     } finally {
       await harness.close(context);
     }

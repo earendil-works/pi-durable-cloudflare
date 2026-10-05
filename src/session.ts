@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { normalizeUsername } from "./identity.ts";
-import { planHarnessAlarm } from "./schedule.ts";
+import { scheduledDeadline } from "./schedule.ts";
 import { createChatHarnessOptions } from "./chat.ts";
 import {
   InvalidClientCommand,
@@ -123,11 +123,15 @@ export class Session extends Server<Env> {
     let activity: AttachedReplicatedState<TaskGraph> | undefined;
     try {
       const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(this.ctx.storage));
+      const chatOptions = createChatHarnessOptions((timestamp) =>
+        this.#setAlarmNoLaterThan(timestamp),
+      );
       harness = await Harness.open(
         storage,
-        createChatHarnessOptions({
-          scheduleCreated: () => this.#refreshAlarm(),
-        }),
+        {
+          ...chatOptions,
+          onReport: (error) => reportError("Harness background task failed", error),
+        },
         BACKGROUND_CONTEXT,
       );
       this.#harness = harness;
@@ -520,19 +524,24 @@ export class Session extends Server<Env> {
 
   #refreshAlarm(): Promise<void> {
     return this.#serializeAlarmUpdate(async () => {
-      const inspection = await this.#harness.inspect(BACKGROUND_CONTEXT);
-      const plan = planHarnessAlarm(inspection.tasks, Date.now());
-      const recovery =
-        plan.recoveryTasks.length > 0 ? Date.now() + RECOVERY_ALARM_DELAY_MS : undefined;
-      const next =
-        plan.nextDeadline === undefined
-          ? recovery
-          : recovery === undefined
-            ? plan.nextDeadline
-            : Math.min(plan.nextDeadline, recovery);
-      await this.#replaceAlarm(next);
+      const { tasks } = await this.#harness.inspect(BACKGROUND_CONTEXT);
+      const now = Date.now();
+      let nextAlarm: number | undefined;
+      const tasksToResume: TaskId[] = [];
+
+      for (const task of tasks) {
+        if (task.state.kind === "blocked") continue;
+        const scheduled = scheduledDeadline(task);
+        const waitsForFuture =
+          scheduled !== undefined && scheduled > now && !task.record.abortRequested;
+        const deadline = waitsForFuture ? scheduled : now + RECOVERY_ALARM_DELAY_MS;
+        nextAlarm = nextAlarm === undefined ? deadline : Math.min(nextAlarm, deadline);
+        if (!waitsForFuture) tasksToResume.push(task.record.id);
+      }
+
+      await this.#replaceAlarm(nextAlarm);
       // waitForTask starts the scheduler, so persist its recovery alarm first.
-      for (const taskId of plan.recoveryTasks) this.#refreshAlarmWhenTaskSettles(taskId);
+      for (const taskId of tasksToResume) this.#refreshAlarmWhenTaskSettles(taskId);
     });
   }
 

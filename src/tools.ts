@@ -121,7 +121,7 @@ const scheduleResult = (scheduled: ScheduledInstruction, now: number) => {
 };
 
 export function createScheduleTool(
-  scheduleCreated: (runAt: number) => Promise<void>,
+  ensureWakeupAt: (timestamp: number) => Promise<void>,
 ): ToolRegistration {
   return {
     name: SCHEDULE_TOOL_NAME,
@@ -178,7 +178,7 @@ export function createScheduleTool(
     execute: async (args: ScheduleArguments, api, context) => {
       const existing = (await api.snapshot(ScheduleIntent, api.taskId, context))?.scheduled;
       if (existing !== undefined) {
-        await scheduleCreated(existing.runAt);
+        await ensureWakeupAt(existing.runAt);
         return scheduleResult(existing, Date.now());
       }
 
@@ -260,7 +260,7 @@ export function createScheduleTool(
           return requested;
         }, context);
       }
-      await scheduleCreated(persisted.runAt);
+      await ensureWakeupAt(persisted.runAt);
       return scheduleResult(persisted, now);
     },
   };

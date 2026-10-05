@@ -102,7 +102,7 @@ async function configureOfflineModel(sessionId: string, conversationId: number =
     const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
     const harness = await Harness.open(
       storage,
-      createChatHarnessOptions({ scheduleCreated: async () => {} }),
+      createChatHarnessOptions(async () => {}),
       BACKGROUND_CONTEXT,
     );
     try {
@@ -731,7 +731,7 @@ describe("chat application", () => {
         const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
         const harness = await Harness.open(
           storage,
-          createChatHarnessOptions({ scheduleCreated: async () => {} }),
+          createChatHarnessOptions(async () => {}),
           BACKGROUND_CONTEXT,
         );
         try {
