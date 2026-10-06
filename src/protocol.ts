@@ -82,7 +82,7 @@ export interface ConversationSummary {
     readonly conversationId: number;
     readonly at: number;
   };
-  /** Set for conversations created by a tool call, such as a recall subagent. */
+  /** Set for conversations created by a tool call, such as a search subagent. */
   readonly owner?: {
     readonly conversationId: number;
   };

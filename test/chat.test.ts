@@ -427,7 +427,7 @@ describe("chat application", () => {
           agent: {
             model: { provider: "openai", modelId: "gpt-6-luna" },
             thinkingLevel: "off",
-            tools: ["get_weather", "schedule", "recall"],
+            tools: ["get_weather", "schedule", "search_history"],
           },
         },
       ],
@@ -724,7 +724,7 @@ describe("chat application", () => {
 
   it("lists subagent conversations with their owner", async () => {
     const sessionId = "owned-conversations-listed";
-    // A task-owned conversation, as recall creates for its subagent.
+    // A task-owned conversation, as history search creates for its subagent.
     const childId = await runInDurableObject(
       env.SESSIONS.getByName(sessionId),
       async (_instance, state) => {

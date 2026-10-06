@@ -12,7 +12,7 @@ Pi Durable is experimental, so its APIs may still change.
 - Run several conversations at once and fork a conversation from an earlier message.
 - Reconnect without losing committed transcripts or queued prompts.
 - Schedule one-time or recurring follow-ups.
-- Ask a recall subagent about earlier conversations.
+- Ask a search subagent about earlier conversations.
 - Open Activity to inspect live task ownership, waits, tool calls, and background work while conversations run.
 
 This is a sample, not a production service. It intentionally has no authentication or rate limiting.
@@ -47,7 +47,7 @@ The shortest path through the project is:
 - [`src/chat.ts`](src/chat.ts) defines the models, extensions, tools, and default agent.
 - [`src/session.ts`](src/session.ts) hosts the harness in a Durable Object and connects it to WebSockets and alarms.
 - [`src/sqlite.ts`](src/sqlite.ts) adapts Durable Object SQLite to pi-durable storage.
-- [`src/tools.ts`](src/tools.ts), [`src/schedule.ts`](src/schedule.ts), and [`src/recall.ts`](src/recall.ts) contain the example tools and tasks.
+- [`src/tools.ts`](src/tools.ts), [`src/schedule.ts`](src/schedule.ts), and [`src/search.ts`](src/search.ts) contain the example tools and tasks.
 - [`src/client/`](src/client/) is the React client and its event-driven session state.
 - [`test/`](test/) covers the application flows and runs pi-durable's storage conformance suite against the Cloudflare adapter.
 

@@ -8,7 +8,7 @@ import {
   type HarnessOptions,
 } from "@earendil-works/pi-durable";
 import { DeliverScheduledInstruction } from "./schedule.ts";
-import { recallSearchExtension, recallTool } from "./recall.ts";
+import { conversationSearchExtension, searchHistoryTool } from "./search.ts";
 import { createScheduleTool, getWeatherTool } from "./tools.ts";
 
 const models = createModels();
@@ -22,7 +22,7 @@ export function createChatHarnessOptions(
   const chatExtension = defineExtension({
     name: "chat",
     tasks: [DeliverScheduledInstruction],
-    tools: [getWeatherTool, scheduleTool, recallTool],
+    tools: [getWeatherTool, scheduleTool, searchHistoryTool],
     sections: [
       section(
         "preamble",
@@ -40,11 +40,11 @@ export function createChatHarnessOptions(
   });
   const registry = createRegistry();
   registry.install(chatExtension);
-  registry.install(recallSearchExtension);
+  registry.install(conversationSearchExtension);
   const defaultAgent = {
     model: { provider: "openai", modelId: "gpt-6-luna" },
     thinkingLevel: "off" as const,
-    tools: [getWeatherTool, scheduleTool, recallTool],
+    tools: [getWeatherTool, scheduleTool, searchHistoryTool],
   };
 
   return {

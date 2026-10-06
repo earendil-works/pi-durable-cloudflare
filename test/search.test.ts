@@ -9,7 +9,6 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import {
   type Conversation,
-  type ConversationId,
   createRegistry,
   defineExtension,
   Harness,
@@ -17,12 +16,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import {
-  RECALL_TOOL_NAME,
-  recallSearchExtension,
-  recallTool,
+  SEARCH_HISTORY_TOOL_NAME,
+  conversationSearchExtension,
+  searchHistoryTool,
   searchConversations,
   searchConversationsTool,
-} from "../src/recall.ts";
+} from "../src/search.ts";
 
 const context = BACKGROUND_CONTEXT;
 const model = { provider: "faux", modelId: "faux-1" };
@@ -34,9 +33,12 @@ async function openHarness(responses: readonly FauxResponseStep[]): Promise<Harn
   models.setProvider(faux.provider);
   const registry = createRegistry();
   registry.install(
-    defineExtension({ name: "recall", tools: [recallTool, searchConversationsTool] }),
+    defineExtension({
+      name: "history-search",
+      tools: [searchHistoryTool, searchConversationsTool],
+    }),
   );
-  registry.install(recallSearchExtension);
+  registry.install(conversationSearchExtension);
   return Harness.open(new MemoryStorage(), { models, registry }, context);
 }
 
@@ -49,16 +51,15 @@ async function ask(conversation: Conversation, content: string) {
   return settled;
 }
 
-/** Search as a tool call in `conversationId` would. */
-const searchFrom = (harness: Harness, conversationId: ConversationId, term: string) =>
+const searchFrom = (harness: Harness, term: string) =>
   searchConversations(
-    { commit: (change, commitContext) => harness.commit(change, commitContext), conversationId },
+    { commit: (change, commitContext) => harness.commit(change, commitContext) },
     term,
     context,
   );
 
 describe("conversation search", () => {
-  it("finds messages once across forks and skips the asking conversation", async () => {
+  it("finds user and assistant messages once across top-level conversations and forks", async () => {
     const harness = await openHarness([
       fauxAssistantMessage([fauxText("Postgres with one database per tenant.")]),
       fauxAssistantMessage([fauxText("Weather looks fine.")]),
@@ -71,7 +72,7 @@ describe("conversation search", () => {
       await ask(fork, "What about the weather?");
 
       // The fork inherits both root entries but wrote neither, so each appears once, in the root.
-      await expect(searchFrom(harness, fork.id, "database")).resolves.toEqual({
+      await expect(searchFrom(harness, "database")).resolves.toEqual({
         truncated: false,
         matches: [
           {
@@ -88,27 +89,23 @@ describe("conversation search", () => {
           },
         ],
       });
-      await expect(searchFrom(harness, root.id, "database")).resolves.toEqual({
-        truncated: false,
-        matches: [],
-      });
-      await expect(searchFrom(harness, fork.id, "  ")).rejects.toThrow(
-        "Search term must contain text",
-      );
+      await expect(searchFrom(harness, "  ")).rejects.toThrow("Search term must contain text");
     } finally {
       await harness.close(context);
     }
   });
 });
 
-describe("recall subagent", () => {
-  it("answers from a child whose search skips the asking conversation", async () => {
+describe("history search subagent", () => {
+  it("searches ordinary top-level turns but excludes search turns and subagents", async () => {
     const harness = await openHarness([
       // Seed, in the root: the decision.
       fauxAssistantMessage([fauxText("Decision: Postgres, one database per tenant.")]),
+      // An ordinary turn in the conversation that will later search.
+      fauxAssistantMessage([fauxText("Postgres replicas should stay regional.")]),
       // Asking conversation delegates.
       fauxAssistantMessage(
-        [fauxToolCall(RECALL_TOOL_NAME, { question: "Did we pick postgres?" })],
+        [fauxToolCall(SEARCH_HISTORY_TOOL_NAME, { question: "Did we pick postgres?" })],
         { stopReason: "toolUse" },
       ),
       // Child searches, then answers.
@@ -122,14 +119,14 @@ describe("recall subagent", () => {
     try {
       const root = await harness.root(context);
       await root.configure({ model }, context);
-      await ask(root, "Let's decide on the database.");
+      const rootDecision = await ask(root, "Let's decide on the database.");
       const asking = await harness.createConversation(
         { ownership: { kind: "ownerless" } },
         context,
       );
-      await asking.configure({ model, tools: [recallTool] }, context);
+      await asking.configure({ model, tools: [searchHistoryTool] }, context);
 
-      // The question mentions postgres, so a search that included the asking conversation would find it.
+      const localDecision = await ask(asking, "Keep the Postgres replicas regional.");
       await ask(asking, "Did we pick postgres?");
       const [final, toolResult] = (
         await harness.commit((tx) => tx.scanEntries({ conversationId: asking.id }, 3), context)
@@ -148,12 +145,13 @@ describe("recall subagent", () => {
       const child = children[0]!;
       expect(toolResult?.model?.[0]).toMatchObject({
         role: "toolResult",
-        toolName: RECALL_TOOL_NAME,
+        toolName: SEARCH_HISTORY_TOOL_NAME,
         content: [{ type: "text", text: "Yes, Postgres, per the earlier conversation." }],
         details: { conversationId: child.id },
       });
 
-      // The child's search found only the root's decision: not the question, not the child itself.
+      // The child found ordinary turns in both top-level conversations. It did not find its own
+      // conversation or the user and assistant messages of the turn that invoked search.
       const childEntries = (
         await harness.commit((tx) => tx.scanEntries({ conversationId: child.id }, 20), context)
       ).items;
@@ -164,8 +162,35 @@ describe("recall subagent", () => {
         search?.role === "toolResult" && search.content[0]?.type === "text"
           ? search.content[0].text
           : "";
-      const { matches } = JSON.parse(text) as { matches: Array<{ conversationId: number }> };
-      expect(matches.map(({ conversationId }) => conversationId)).toEqual([root.id]);
+      const { matches } = JSON.parse(text) as {
+        matches: Array<{ conversationId: number; entryId: number; role: string; snippet: string }>;
+      };
+      expect(matches).toEqual([
+        {
+          conversationId: root.id,
+          entryId: rootDecision.answer,
+          role: "assistant",
+          snippet: "Decision: Postgres, one database per tenant.",
+        },
+        {
+          conversationId: asking.id,
+          entryId: localDecision.answer,
+          role: "assistant",
+          snippet: "Postgres replicas should stay regional.",
+        },
+        {
+          conversationId: asking.id,
+          entryId: localDecision.entry,
+          role: "user",
+          snippet: "Keep the Postgres replicas regional.",
+        },
+      ]);
+
+      // Completed search turns remain outside the corpus for later searches too.
+      await expect(searchFrom(harness, "postgres")).resolves.toEqual({
+        truncated: false,
+        matches,
+      });
     } finally {
       await harness.close(context);
     }
