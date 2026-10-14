@@ -19,6 +19,7 @@ import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { normalizeUsername } from "./identity.ts";
 import { scheduledDeadline } from "./schedule.ts";
 import { createChatHarnessOptions } from "./chat.ts";
+import { createCloudflareSqliteDatabase } from "./sqlite.ts";
 import {
   InvalidClientCommand,
   MAX_CLIENT_FRAME_CHARACTERS,
@@ -28,7 +29,6 @@ import {
   queuedInputs,
   type ServerEvent,
 } from "./protocol.ts";
-import { createCloudflareSqliteDatabase } from "./sqlite.ts";
 import { KeyedSerialQueue } from "./serial.ts";
 
 const json = (body: unknown, status: number, headers?: HeadersInit): Response =>

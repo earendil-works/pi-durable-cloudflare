@@ -2,7 +2,28 @@ allowBuilds:
   esbuild: true
   workerd: true
 minimumReleaseAgeExclude:
-  - "@earendil-works/chord@1.0.0"
-  - "@earendil-works/pi-ai@1.0.0"
-  - "@earendil-works/pi-durable@1.0.0"
-  - "@earendil-works/pi-telemetry@1.0.0"
+  - "@cloudflare/vite-plugin@1.63.2"
+  - "@cloudflare/vitest-plugin@1.4.1"
+  - "@cloudflare/workers-types@5.20261013.1"
+  - "@oxfmt/binding-android-arm-eabi@0.73.0"
+  - "@oxfmt/binding-android-arm64@0.73.0"
+  - "@oxfmt/binding-darwin-arm64@0.73.0"
+  - "@oxfmt/binding-darwin-x64@0.73.0"
+  - "@oxfmt/binding-freebsd-x64@0.73.0"
+  - "@oxfmt/binding-linux-arm-gnueabihf@0.73.0"
+  - "@oxfmt/binding-linux-arm-musleabihf@0.73.0"
+  - "@oxfmt/binding-linux-arm64-gnu@0.73.0"
+  - "@oxfmt/binding-linux-arm64-musl@0.73.0"
+  - "@oxfmt/binding-linux-ppc64-gnu@0.73.0"
+  - "@oxfmt/binding-linux-riscv64-gnu@0.73.0"
+  - "@oxfmt/binding-linux-riscv64-musl@0.73.0"
+  - "@oxfmt/binding-linux-s390x-gnu@0.73.0"
+  - "@oxfmt/binding-linux-x64-gnu@0.73.0"
+  - "@oxfmt/binding-linux-x64-musl@0.73.0"
+  - "@oxfmt/binding-openharmony-arm64@0.73.0"
+  - "@oxfmt/binding-win32-arm64-msvc@0.73.0"
+  - "@oxfmt/binding-win32-ia32-msvc@0.73.0"
+  - "@oxfmt/binding-win32-x64-msvc@0.73.0"
+  - miniflare@5.20261006.2-beta
+  - oxfmt@0.73.0
+  - wrangler@4.150.0

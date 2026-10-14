@@ -28,7 +28,7 @@ export const getWeatherTool = {
       note: "Mock data; connect a weather MCP server for real forecasts.",
     };
     return {
-      content: [{ type: "text" as const, text: JSON.stringify(weather) }],
+      output: [{ type: "text" as const, text: JSON.stringify(weather) }],
       details: weather,
     };
   },
@@ -105,7 +105,7 @@ const scheduleResult = (scheduled: ScheduledInstruction, now: number) => {
   const runAt = new Date(scheduled.runAt).toISOString();
   const seconds = Math.max(0, Math.round((scheduled.runAt - now) / 1000));
   return {
-    content: [
+    output: [
       {
         type: "text" as const,
         text: `Scheduled. At ${runAt} (in ${seconds} seconds) this conversation will receive: ${JSON.stringify(scheduled.instruction)}. Nothing further is needed now.`,

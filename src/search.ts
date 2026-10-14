@@ -134,7 +134,7 @@ export const searchConversationsTool: ToolRegistration = {
   execute: async (args, api, context) => {
     const { term } = args as { term: string };
     const result = await searchConversations(api, term, context);
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    return { output: [{ type: "text", text: JSON.stringify(result) }] };
   },
 };
 
@@ -195,7 +195,7 @@ export const searchHistoryTool: ToolRegistration = {
     const answer = await api.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
     const text = messageText(answer?.model?.[0] as AssistantMessage | undefined);
     return {
-      content: [{ type: "text", text }],
+      output: [{ type: "text", text }],
       details: { conversationId: childId },
     };
   },

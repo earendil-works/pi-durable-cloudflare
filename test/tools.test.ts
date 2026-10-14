@@ -31,7 +31,7 @@ describe("custom tools", () => {
       const temperature = Number.parseInt(result.details.temperature, 10);
       expect(temperature).toBeGreaterThanOrEqual(55);
       expect(temperature).toBeLessThanOrEqual(89);
-      expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
+      expect(result.output).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
     }
   });
   it("creates durable delayed tasks before requesting their Durable Object alarms", async () => {

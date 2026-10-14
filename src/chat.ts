@@ -50,7 +50,11 @@ export function createChatHarnessOptions(
   return {
     models,
     registry,
-    settings: { extensions: [chatExtension] },
+    settings: {
+      extensions: [chatExtension],
+      // Retention timers are active Durable Object references and prevent hibernation.
+      documentRetentionMs: 0,
+    },
     conversationCreated: (tx, conversation) =>
       conversation.owner === undefined && conversation.parent === undefined
         ? configure(tx, conversation.id, defaultAgent)

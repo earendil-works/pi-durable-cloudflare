@@ -8,7 +8,7 @@ import {
   seedStorageWriteBenchmark,
 } from "@earendil-works/pi-durable/testing";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
-import { bench, describe } from "vitest";
+import { test } from "vitest";
 import { createCloudflareSqliteDatabase } from "../src/sqlite.ts";
 
 const BACKEND_NAME = "Cloudflare Durable Object SQLite";
@@ -57,14 +57,10 @@ for (const scenario of STORAGE_READ_BENCHMARKS) {
   const result = await useStorage(readStub, (storage) => scenario.run(storage, readDataset));
   assertResult(scenario.name, result, scenario.expected(readDataset));
 
-  describe(scenario.name, () => {
-    bench(
-      BACKEND_NAME,
-      async () => {
-        await useStorage(readStub, (storage) => scenario.run(storage, readDataset));
-      },
-      READ_OPTIONS,
-    );
+  test(scenario.name, async ({ bench }) => {
+    await bench(BACKEND_NAME, async () => {
+      await useStorage(readStub, (storage) => scenario.run(storage, readDataset));
+    }).run(READ_OPTIONS);
   });
 }
 
@@ -83,15 +79,11 @@ for (const scenario of STORAGE_WRITE_BENCHMARKS) {
   for (let index = 0; index < WRITE_OPTIONS.iterations + WRITE_OPTIONS.warmupIterations; index++) {
     pool.push(await createWriteFixture());
   }
-  describe(scenario.name, () => {
-    bench(
-      BACKEND_NAME,
-      async () => {
-        const stub = pool.shift();
-        if (stub === undefined) throw new Error(`Fixture pool for ${scenario.name} was exhausted`);
-        await useStorage(stub, scenario.run);
-      },
-      WRITE_OPTIONS,
-    );
+  test(scenario.name, async ({ bench }) => {
+    await bench(BACKEND_NAME, async () => {
+      const stub = pool.shift();
+      if (stub === undefined) throw new Error(`Fixture pool for ${scenario.name} was exhausted`);
+      await useStorage(stub, scenario.run);
+    }).run(WRITE_OPTIONS);
   });
 }
