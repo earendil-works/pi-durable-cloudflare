@@ -360,8 +360,8 @@ export class Session extends DurableObject<Env> {
         return;
       case "conversation.create": {
         const conversationId = await this.#harness.commit(async (tx) => {
-          const receipt = await tx.doc(ConversationCommandReceipts, command.requestId, null);
-          const existing = receipt.receipt;
+          const doc = await tx.doc(ConversationCommandReceipts, command.requestId, null);
+          const existing = doc.receipt;
           if (existing !== undefined) {
             if (existing.command !== command.type) {
               throw new Error(
@@ -371,7 +371,7 @@ export class Session extends DurableObject<Env> {
             return existing.conversationId;
           }
           const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
-          receipt.receipt = {
+          doc.receipt = {
             command: command.type,
             conversationId: conversation.id,
           };
@@ -392,8 +392,8 @@ export class Session extends DurableObject<Env> {
         const parentConversationId = command.conversationId as ConversationId;
         const entryId = command.entryId as EntryId;
         const conversationId = await this.#harness.commit(async (tx) => {
-          const receipt = await tx.doc(ConversationCommandReceipts, command.requestId, null);
-          const existing = receipt.receipt;
+          const doc = await tx.doc(ConversationCommandReceipts, command.requestId, null);
+          const existing = doc.receipt;
           if (existing !== undefined) {
             if (
               existing.command !== command.type ||
@@ -407,7 +407,7 @@ export class Session extends DurableObject<Env> {
           const fork = await tx.forkConversation(parentConversationId, entryId, {
             ownership: { kind: "ownerless" },
           });
-          receipt.receipt = {
+          doc.receipt = {
             command: command.type,
             conversationId: fork.id,
             parentConversationId,
