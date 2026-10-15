@@ -2,7 +2,12 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
-import { type ConversationId, createRegistry, Harness } from "@earendil-works/pi-durable";
+import {
+  type ConversationId,
+  createRegistry,
+  Harness,
+  type HarnessOptions,
+} from "@earendil-works/pi-durable";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 import { createChatHarnessOptions } from "../src/chat.ts";
@@ -95,16 +100,36 @@ const jsonMessages = (socket: WebSocket) => {
   };
 };
 
-async function configureOfflineModel(sessionId: string, conversationId: number = 1): Promise<void> {
+/**
+ * Write state as an earlier process would have. The live Session keeps its own harness open, so seed through a
+ * separate harness and then evict, letting the next request reopen the Session from storage.
+ */
+async function seedSession<T>(
+  sessionId: string,
+  options: HarnessOptions,
+  seed: (harness: Harness) => Promise<T>,
+): Promise<T> {
   const stub = env.SESSIONS.getByName(sessionId);
-  await runInDurableObject(stub, async (_instance, state) => {
+  const result = await runInDurableObject(stub, async (_instance, state) => {
+    // Let the Session finish opening its harness before writing beside it.
+    await state.blockConcurrencyWhile(async () => {});
     const storage = await openDurableObjectSqliteStorage(state.storage);
-    const harness = await Harness.open(
-      storage,
-      createChatHarnessOptions(async () => {}),
-      BACKGROUND_CONTEXT,
-    );
+    const harness = await Harness.open(storage, options, BACKGROUND_CONTEXT);
     try {
+      return await seed(harness);
+    } finally {
+      await harness.close(BACKGROUND_CONTEXT);
+    }
+  });
+  await evictDurableObject(stub);
+  return result;
+}
+
+const configureOfflineModel = (sessionId: string, conversationId: number = 1): Promise<void> =>
+  seedSession(
+    sessionId,
+    createChatHarnessOptions(async () => {}),
+    async (harness) => {
       await harness.root(BACKGROUND_CONTEXT);
       const conversation = await harness.conversation(
         conversationId as ConversationId,
@@ -115,43 +140,29 @@ async function configureOfflineModel(sessionId: string, conversationId: number =
         { model: { provider: "offline", modelId: "offline" }, tools: [] },
         BACKGROUND_CONTEXT,
       );
-    } finally {
-      await harness.close(BACKGROUND_CONTEXT);
-    }
-  });
-}
+    },
+  );
 
-async function seedUserEntry(sessionId: string, content: string): Promise<number> {
-  const stub = env.SESSIONS.getByName(sessionId);
-  return runInDurableObject(stub, async (_instance, state) => {
-    const storage = await openDurableObjectSqliteStorage(state.storage);
-    const models = createModels();
-    const faux = fauxProvider();
-    faux.setResponses([fauxAssistantMessage([fauxText("Seeded")])]);
-    models.setProvider(faux.provider);
-    const harness = await Harness.open(
-      storage,
-      { models, registry: createRegistry() },
+const seedUserEntry = (sessionId: string, content: string): Promise<number> => {
+  const models = createModels();
+  const faux = fauxProvider();
+  faux.setResponses([fauxAssistantMessage([fauxText("Seeded")])]);
+  models.setProvider(faux.provider);
+  return seedSession(sessionId, { models, registry: createRegistry() }, async (harness) => {
+    const root = await harness.root(BACKGROUND_CONTEXT, {
+      agent: { model: { provider: "faux", modelId: "faux-1" }, tools: [] },
+    });
+    const submission = await root.submit(
+      { type: "input", content, requestId: "seed" },
       BACKGROUND_CONTEXT,
     );
-    try {
-      const root = await harness.root(BACKGROUND_CONTEXT, {
-        agent: { model: { provider: "faux", modelId: "faux-1" }, tools: [] },
-      });
-      const submission = await root.submit(
-        { type: "input", content, requestId: "seed" },
-        BACKGROUND_CONTEXT,
-      );
-      const settled = await submission.wait(BACKGROUND_CONTEXT);
-      if (settled.type !== "input" || settled.entry === undefined) {
-        throw new Error("Seed submission did not create an input entry");
-      }
-      return settled.entry;
-    } finally {
-      await harness.close(BACKGROUND_CONTEXT);
+    const settled = await submission.wait(BACKGROUND_CONTEXT);
+    if (settled.type !== "input" || settled.entry === undefined) {
+      throw new Error("Seed submission did not create an input entry");
     }
+    return settled.entry;
   });
-}
+};
 
 describe("chat application", () => {
   it("shares attributed prompts between clients in one session", async () => {
@@ -472,7 +483,6 @@ describe("chat application", () => {
 
     await evictDurableObject(env.SESSIONS.getByName(sessionId));
     await configureOfflineModel(sessionId, created.conversationId);
-    await evictDurableObject(env.SESSIONS.getByName(sessionId));
     socket.send(
       JSON.stringify({
         type: "prompt.submit",
@@ -631,7 +641,6 @@ describe("chat application", () => {
   it("creates a durable fork at a committed transcript entry", async () => {
     const sessionId = "fork-over-websocket";
     const entryId = await seedUserEntry(sessionId, "Fork this");
-    await evictDurableObject(env.SESSIONS.getByName(sessionId));
 
     const response = await exports.default.fetch(`https://example.com/api/sessions/${sessionId}`, {
       headers: { Upgrade: "websocket" },
@@ -724,36 +733,27 @@ describe("chat application", () => {
   it("lists subagent conversations with their owner", async () => {
     const sessionId = "owned-conversations-listed";
     // A task-owned conversation, as history search creates for its subagent.
-    const childId = await runInDurableObject(
-      env.SESSIONS.getByName(sessionId),
-      async (_instance, state) => {
-        const storage = await openDurableObjectSqliteStorage(state.storage);
-        const harness = await Harness.open(
-          storage,
-          createChatHarnessOptions(async () => {}),
-          BACKGROUND_CONTEXT,
-        );
-        try {
-          const root = await harness.root(BACKGROUND_CONTEXT);
-          return await root.commit(async (tx) => {
-            const task = await tx.createTask(
-              DeliverScheduledInstruction,
-              {
-                id: "schedule:owner",
-                conversationId: root.id,
-                instruction: "Owner only",
-                runAt: Date.now() + 3_600_000,
-              },
-              { ownership: { kind: "conversation" }, background: true },
-            );
-            const child = await tx.createConversation({
-              ownership: { kind: "task", taskId: task },
-            });
-            return child.id;
-          }, BACKGROUND_CONTEXT);
-        } finally {
-          await harness.close(BACKGROUND_CONTEXT);
-        }
+    const childId = await seedSession(
+      sessionId,
+      createChatHarnessOptions(async () => {}),
+      async (harness) => {
+        const root = await harness.root(BACKGROUND_CONTEXT);
+        return root.commit(async (tx) => {
+          const task = await tx.createTask(
+            DeliverScheduledInstruction,
+            {
+              id: "schedule:owner",
+              conversationId: root.id,
+              instruction: "Owner only",
+              runAt: Date.now() + 3_600_000,
+            },
+            { ownership: { kind: "conversation" }, background: true },
+          );
+          const child = await tx.createConversation({
+            ownership: { kind: "task", taskId: task },
+          });
+          return child.id;
+        }, BACKGROUND_CONTEXT);
       },
     );
 

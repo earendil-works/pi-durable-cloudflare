@@ -160,35 +160,33 @@ export class Session extends DurableObject<Env> {
   readonly #connectionOperations = new KeyedSerialQueue<WebSocket>();
   readonly #alarmTaskWatches = new Set<TaskId>();
   #alarmUpdate: Promise<void> = Promise.resolve();
-  #starting: Promise<void> | undefined;
 
-  #ensureStarted(): Promise<void> {
-    if (this.#starting !== undefined) return this.#starting;
-    // Fetch, alarms, and hibernating socket events can each be the first wake-up event.
-    const starting = this.ctx.blockConcurrencyWhile(() => this.#start());
-    this.#starting = starting;
-    void starting.catch(() => {
-      if (this.#starting === starting) this.#starting = undefined;
-    });
-    return starting;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    void ctx.blockConcurrencyWhile(() => this.#initialize());
   }
 
-  async #start(): Promise<void> {
-    let harness: Harness | undefined;
+  async #initialize(): Promise<void> {
+    const storage = await openDurableObjectSqliteStorage(this.ctx.storage);
+    const chatOptions = createChatHarnessOptions((timestamp) =>
+      this.#setAlarmNoLaterThan(timestamp),
+    );
+    const harness = await Harness.open(
+      storage,
+      {
+        ...chatOptions,
+        onReport: (error) => reportError("Harness background task failed", error),
+      },
+      BACKGROUND_CONTEXT,
+    );
+
+    // A storage error closes the harness. Reset the object so the next event reopens it.
+    void harness.closed.then((end) => {
+      if (end.reason === "failed") this.ctx.abort("Harness failed");
+    });
+
     let activity: AttachedReplicatedState<TaskGraph> | undefined;
     try {
-      const storage = await openDurableObjectSqliteStorage(this.ctx.storage);
-      const chatOptions = createChatHarnessOptions((timestamp) =>
-        this.#setAlarmNoLaterThan(timestamp),
-      );
-      harness = await Harness.open(
-        storage,
-        {
-          ...chatOptions,
-          onReport: (error) => reportError("Harness background task failed", error),
-        },
-        BACKGROUND_CONTEXT,
-      );
       this.#harness = harness;
       activity = await harness.taskGraph(BACKGROUND_CONTEXT);
       this.#activity = activity;
@@ -211,16 +209,12 @@ export class Session extends DurableObject<Env> {
       await this.#refreshAlarm();
     } catch (error) {
       activity?.dispose();
-      this.#eventStreams.clear();
-      this.#typingConnections.clear();
-      this.#alarmTaskWatches.clear();
-      if (harness !== undefined) await harness.close(BACKGROUND_CONTEXT);
+      await harness.close(BACKGROUND_CONTEXT);
       throw error;
     }
   }
 
   override async fetch(request: Request): Promise<Response> {
-    await this.#ensureStarted();
     if (request.method !== "GET") {
       return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
     }
@@ -250,13 +244,11 @@ export class Session extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
-    await this.#ensureStarted();
     await this.#refreshAlarm();
   }
 
   override async webSocketMessage(socket: WebSocket, message: WSMessage): Promise<void> {
     try {
-      await this.#ensureStarted();
       await this.#connectionOperations.run(socket, () => this.#processMessage(socket, message));
     } catch (error) {
       reportError("Session WebSocket message failed", error);
@@ -320,7 +312,6 @@ export class Session extends DurableObject<Env> {
     _wasClean: boolean,
   ): Promise<void> {
     try {
-      await this.#ensureStarted();
       await this.#connectionOperations.run(socket, async () => {
         this.#setTyping(socket, false);
         await this.#stopEventStream(socket);
@@ -334,7 +325,6 @@ export class Session extends DurableObject<Env> {
 
   override async webSocketError(socket: WebSocket, error: unknown): Promise<void> {
     try {
-      await this.#ensureStarted();
       await this.#connectionOperations.run(socket, async () => {
         reportError("Session WebSocket failed", error);
         this.#setTyping(socket, false);
