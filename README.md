@@ -45,26 +45,22 @@ Open the local URL printed by Vite, create a session, and send a message. Open t
 The shortest path through the project is:
 
 - [`src/chat.ts`](src/chat.ts) defines the models, extensions, tools, and default agent.
-- [`src/session.ts`](src/session.ts) hosts the harness in a Durable Object and connects it to WebSockets and alarms.
-- [`src/sqlite.ts`](src/sqlite.ts) adapts Durable Object SQLite to pi-durable storage.
+- [`src/session.ts`](src/session.ts) hosts the harness with Pi Durable's built-in Durable Object SQLite storage and connects it to Cloudflare's native hibernating WebSockets and alarms.
 - [`src/tools.ts`](src/tools.ts), [`src/schedule.ts`](src/schedule.ts), and [`src/search.ts`](src/search.ts) contain the example tools and tasks.
 - [`src/client/`](src/client/) is the React client and its event-driven session state.
-- [`test/`](test/) covers the application flows and runs pi-durable's storage conformance suite against the Cloudflare adapter.
+- [`test/`](test/) covers application flows including restart recovery, scheduling, forks, and inboxes, and runs pi-durable's storage conformance suite against the built-in Cloudflare adapter.
 
-The code is the documentation for this integration. In particular, the tests are useful examples of restart behavior, scheduling, forks, inboxes, and storage semantics.
+The code is the documentation for this integration. In particular, the tests are useful examples of restart behavior, scheduling, forks, inboxes, and storage conformance.
 
 ## Commands
 
 ```sh
 pnpm dev        # local development
 pnpm test       # test suite
-pnpm benchmark  # storage benchmarks
 pnpm check      # formatting, types, build, and deploy dry run
 pnpm build      # production build
 pnpm preview    # preview the production build locally
 ```
-
-Benchmarks run in the local Workers runtime. They are useful for comparing adapter changes, not as production latency measurements.
 
 ## Deploy
 

@@ -1,11 +1,9 @@
-import { routePartykitRequest } from "partyserver";
-
 export { Session } from "./session.ts";
 
 const json = (body: unknown, status: number, headers?: HeadersInit): Response =>
   Response.json(body, { status, headers });
 
-const sessionSocketRoute = /^\/api\/sessions\/[^/]+\/?$/;
+const sessionSocketRoute = /^\/api\/sessions\/([^/]+)\/?$/;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -19,7 +17,8 @@ export default {
       return json({ sessionId, url: `/sessions/${sessionId}` }, 201);
     }
 
-    if (sessionSocketRoute.test(url.pathname)) {
+    const sessionMatch = sessionSocketRoute.exec(url.pathname);
+    if (sessionMatch !== null) {
       if (request.method !== "GET") {
         return json({ error: "Method not allowed" }, 405, { Allow: "GET" });
       }
@@ -27,8 +26,7 @@ export default {
         return json({ error: "WebSocket upgrade required" }, 426, { Upgrade: "websocket" });
       }
       // Demo-only surface: authenticate and rate limit before exposing model-backed rooms publicly.
-      const party = await routePartykitRequest(request, env, { prefix: "api" });
-      if (party !== null) return party;
+      return env.SESSIONS.getByName(sessionMatch[1]).fetch(request);
     }
 
     return json({ error: "Not found" }, 404);

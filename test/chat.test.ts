@@ -3,13 +3,12 @@ import { env, exports } from "cloudflare:workers";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { type ConversationId, createRegistry, Harness } from "@earendil-works/pi-durable";
-import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 import { createChatHarnessOptions } from "../src/chat.ts";
 import worker from "../src/index.ts";
 import { MAX_CLIENT_FRAME_CHARACTERS } from "../src/protocol.ts";
 import { DeliverScheduledInstruction } from "../src/schedule.ts";
-import { createCloudflareSqliteDatabase } from "../src/sqlite.ts";
 
 type ProtocolMessage = {
   readonly type?: string;
@@ -99,7 +98,7 @@ const jsonMessages = (socket: WebSocket) => {
 async function configureOfflineModel(sessionId: string, conversationId: number = 1): Promise<void> {
   const stub = env.SESSIONS.getByName(sessionId);
   await runInDurableObject(stub, async (_instance, state) => {
-    const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
+    const storage = await openDurableObjectSqliteStorage(state.storage);
     const harness = await Harness.open(
       storage,
       createChatHarnessOptions(async () => {}),
@@ -125,7 +124,7 @@ async function configureOfflineModel(sessionId: string, conversationId: number =
 async function seedUserEntry(sessionId: string, content: string): Promise<number> {
   const stub = env.SESSIONS.getByName(sessionId);
   return runInDurableObject(stub, async (_instance, state) => {
-    const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
+    const storage = await openDurableObjectSqliteStorage(state.storage);
     const models = createModels();
     const faux = fauxProvider();
     faux.setResponses([fauxAssistantMessage([fauxText("Seeded")])]);
@@ -728,7 +727,7 @@ describe("chat application", () => {
     const childId = await runInDurableObject(
       env.SESSIONS.getByName(sessionId),
       async (_instance, state) => {
-        const storage = await SqliteStorage.open(createCloudflareSqliteDatabase(state.storage));
+        const storage = await openDurableObjectSqliteStorage(state.storage);
         const harness = await Harness.open(
           storage,
           createChatHarnessOptions(async () => {}),

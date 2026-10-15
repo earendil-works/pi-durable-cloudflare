@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "benchmark": "vitest bench --run --config vitest.benchmark.config.ts",
     "build": "pnpm clean && vite build",
     "clean": "shx rm -rf .wrangler dist",
     "format": "oxfmt .",
@@ -19,7 +18,6 @@
     "@earendil-works/chord": "1.2.0",
     "@earendil-works/pi-ai": "1.2.0",
     "@earendil-works/pi-durable": "1.2.0",
-    "partyserver": "0.5.10",
     "partysocket": "1.3.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
