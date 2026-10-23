@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { DeliverScheduledInstruction } from "../src/schedule.ts";
-import { createScheduleTool, getWeatherTool } from "../src/tools.ts";
+import { getWeatherTool, scheduleTool } from "../src/tools.ts";
 
 const conditions = new Set(["sunny", "partly cloudy", "overcast", "light rain"]);
 
@@ -34,7 +34,7 @@ describe("custom tools", () => {
       expect(result.output).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
     }
   });
-  it("creates durable delayed tasks before requesting their Durable Object alarms", async () => {
+  it("creates background delivery tasks at the requested deadlines", async () => {
     const context = BACKGROUND_CONTEXT;
     const at = new Date(Date.now() + 30 * 60_000).toISOString();
     const recurrence = {
@@ -59,16 +59,6 @@ describe("custom tools", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    let harness: Harness;
-    const tasksWhenCreated = new Map<number, unknown>();
-    const scheduleTool = createScheduleTool(async (runAt) => {
-      tasksWhenCreated.set(
-        runAt,
-        (await harness.inspect(context)).tasks
-          .filter(({ record }) => record.kind === DeliverScheduledInstruction.definition.name)
-          .map(({ record }) => record.input),
-      );
-    });
     registry.install(
       defineExtension({
         name: "schedule",
@@ -76,7 +66,7 @@ describe("custom tools", () => {
         tools: [scheduleTool],
       }),
     );
-    harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+    const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
     try {
       const root = await harness.root(context);
       await root.configure(
@@ -114,11 +104,6 @@ describe("custom tools", () => {
       const delayed = inputs.find(({ instruction }) => instruction === "Look outside")!;
       expect(delayed.runAt).toBeGreaterThanOrEqual(before + 5_000);
       expect(delayed.runAt).toBeLessThanOrEqual(Date.now() + 5_000);
-      for (const input of inputs) {
-        expect(tasksWhenCreated.get(input.runAt)).toEqual(
-          expect.arrayContaining([expect.objectContaining({ id: input.id })]),
-        );
-      }
       expect(new Set(inputs.map(({ id }) => id)).size).toBe(2);
       expect(tasks.map(({ owner, background }) => ({ owner, background }))).toEqual([
         { owner: undefined, background: true },
@@ -156,7 +141,6 @@ describe("custom tools", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    const scheduleTool = createScheduleTool(async () => {});
     registry.install(
       defineExtension({
         name: "schedule",

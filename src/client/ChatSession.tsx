@@ -448,6 +448,7 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
         activeConversationId={activeConversationId}
         onClose={closeActivity}
         closeButtonRef={activityCloseRef}
+        onRetryTask={session.retryTask}
         onOpenConversation={(conversationId) => {
           if (conversationId !== session.activeConversationId) {
             window.history.pushState(null, "", `?conversation=${conversationId}`);

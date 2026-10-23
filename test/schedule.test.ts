@@ -15,7 +15,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { formatScheduledInstruction } from "../src/protocol.ts";
 import { DeliverScheduledInstruction, ScheduleDeliveries } from "../src/schedule.ts";
-import { createScheduleTool } from "../src/tools.ts";
+import { scheduleTool } from "../src/tools.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -33,10 +33,6 @@ describe("scheduled instructions", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    let wakeupsRequested = 0;
-    const scheduleTool = createScheduleTool(async () => {
-      wakeupsRequested++;
-    });
     registry.install(
       defineExtension({
         name: "schedule",
@@ -70,7 +66,6 @@ describe("scheduled instructions", () => {
       await harness.waitForTask(delivery, context);
 
       expect(await harness.snapshot(ScheduleDeliveries, context)).toEqual({ active: [] });
-      expect(wakeupsRequested).toBe(0);
       expect((await root.context(context)).messages).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -118,10 +113,6 @@ describe("scheduled instructions", () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const registry = createRegistry();
-    let wakeupsRequested = 0;
-    const scheduleTool = createScheduleTool(async () => {
-      wakeupsRequested++;
-    });
     registry.install(
       defineExtension({
         name: "schedule",
@@ -174,7 +165,6 @@ describe("scheduled instructions", () => {
       expect(next.runAt).toBeGreaterThanOrEqual(now + 59_000);
       expect(next.runAt).toBeLessThanOrEqual(Date.now() + 60_000);
       expect(await harness.snapshot(ScheduleDeliveries, context)).toEqual({ active: [] });
-      expect(wakeupsRequested).toBe(2);
       const messages = (await root.context(context)).messages;
       const toolResults = messages.filter(
         (message): message is Extract<(typeof messages)[number], { role: "toolResult" }> =>
@@ -266,7 +256,6 @@ describe("scheduled instructions", () => {
       const models = createModels();
       models.setProvider(faux.provider);
       const registry = createRegistry();
-      const scheduleTool = createScheduleTool(async () => {});
       registry.install(
         defineExtension({
           name: "schedule",

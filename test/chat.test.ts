@@ -7,10 +7,12 @@ import {
   createRegistry,
   Harness,
   type HarnessOptions,
+  type TaskId,
 } from "@earendil-works/pi-durable";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 import { createChatHarnessOptions } from "../src/chat.ts";
+import { expectAlarm } from "./alarm.ts";
 import worker from "../src/index.ts";
 import { MAX_CLIENT_FRAME_CHARACTERS } from "../src/protocol.ts";
 import { DeliverScheduledInstruction } from "../src/schedule.ts";
@@ -126,22 +128,18 @@ async function seedSession<T>(
 }
 
 const configureOfflineModel = (sessionId: string, conversationId: number = 1): Promise<void> =>
-  seedSession(
-    sessionId,
-    createChatHarnessOptions(async () => {}),
-    async (harness) => {
-      await harness.root(BACKGROUND_CONTEXT);
-      const conversation = await harness.conversation(
-        conversationId as ConversationId,
-        BACKGROUND_CONTEXT,
-      );
-      if (conversation === undefined) throw new Error(`Conversation ${conversationId} is missing`);
-      await conversation.configure(
-        { model: { provider: "offline", modelId: "offline" }, tools: [] },
-        BACKGROUND_CONTEXT,
-      );
-    },
-  );
+  seedSession(sessionId, createChatHarnessOptions(), async (harness) => {
+    await harness.root(BACKGROUND_CONTEXT);
+    const conversation = await harness.conversation(
+      conversationId as ConversationId,
+      BACKGROUND_CONTEXT,
+    );
+    if (conversation === undefined) throw new Error(`Conversation ${conversationId} is missing`);
+    await conversation.configure(
+      { model: { provider: "offline", modelId: "offline" }, tools: [] },
+      BACKGROUND_CONTEXT,
+    );
+  });
 
 const seedUserEntry = (sessionId: string, content: string): Promise<number> => {
   const models = createModels();
@@ -253,6 +251,120 @@ describe("chat application", () => {
     aliceSocket.close(1000, "test complete");
     bobSocket.close(1000, "test complete");
   });
+  it("clears the heartbeat alarm once a submitted turn settles", async () => {
+    const sessionId = "heartbeat-cleared";
+    await configureOfflineModel(sessionId);
+    const stub = env.SESSIONS.getByName(sessionId);
+    const response = await exports.default.fetch(
+      sessionSocketUrl(sessionId, "Alice", "heartbeat-client"),
+      { headers: { Upgrade: "websocket" } },
+    );
+    const socket = response.webSocket!;
+    const messages = jsonMessages(socket);
+    socket.accept();
+    await messages.skipConnectFrames();
+
+    socket.send(
+      JSON.stringify({
+        type: "prompt.submit",
+        requestId: "heartbeat-prompt",
+        conversationId: 1,
+        content: "Answer and go idle",
+      }),
+    );
+    await messages.nextMatching<{ type: string; requestId?: string }>(
+      (message) => message.type === "command.result" && message.requestId === "heartbeat-prompt",
+    );
+
+    // Whatever the submit path armed, `onWake` deletes the alarm once nothing can run.
+    await expectAlarm(stub, null);
+    socket.close(1000, "test complete");
+  });
+
+  it("shows a task the restart limit parked and runs it again on retry", async () => {
+    const sessionId = "parked-task-retry";
+    const stub = env.SESSIONS.getByName(sessionId);
+    const runAt = Date.now() + 3_600_000;
+    const taskId = await runInDurableObject(stub, async (_instance, state) => {
+      await state.blockConcurrencyWhile(async () => {});
+      const storage = await openDurableObjectSqliteStorage(state.storage);
+      const harness = await Harness.open(storage, createChatHarnessOptions(), BACKGROUND_CONTEXT);
+      let id: number;
+      try {
+        const root = await harness.root(BACKGROUND_CONTEXT);
+        id = await root.commit(
+          (tx) =>
+            tx.createTask(
+              DeliverScheduledInstruction,
+              { id: "schedule:parked", conversationId: root.id, instruction: "Parked", runAt },
+              { ownership: { kind: "conversation" }, background: true },
+            ),
+          BACKGROUND_CONTEXT,
+        );
+      } finally {
+        await harness.close(BACKGROUND_CONTEXT);
+      }
+      // As if four instances had died while running it: the next open counts a fifth cut-off and parks the task.
+      // The closed harness closed its storage; write through a fresh one.
+      const rewrite = await openDurableObjectSqliteStorage(state.storage);
+      const record = (await rewrite.task(id as TaskId, BACKGROUND_CONTEXT))!;
+      if (record.state.status !== "pending") throw new Error("The delivery task should be pending");
+      await rewrite.commit(
+        [
+          {
+            type: "task",
+            value: {
+              ...record,
+              state: { status: "running", checkpoint: record.state.checkpoint },
+              restarts: 4,
+            },
+          },
+        ],
+        BACKGROUND_CONTEXT,
+      );
+      return id;
+    });
+    await evictDurableObject(stub);
+
+    const response = await exports.default.fetch(
+      sessionSocketUrl(sessionId, "Alice", "retry-task-client"),
+      { headers: { Upgrade: "websocket" } },
+    );
+    const socket = response.webSocket!;
+    const messages = jsonMessages(socket);
+    socket.accept();
+    type Activity = { tasks: Record<string, { blocked?: string; state: { status: string } }> };
+    const snapshot = await messages.nextMatching<{ type: string; session: { activity: Activity } }>(
+      ({ type }) => type === "session.snapshot",
+    );
+    expect(snapshot.session.activity.tasks[taskId]).toMatchObject({ blocked: "restart_limit" });
+    // A parked task is not active work, so it keeps no heartbeat alarm.
+    await expectAlarm(stub, null);
+
+    socket.send(JSON.stringify({ type: "task.retry", requestId: "retry-parked", taskId }));
+    await expect(
+      messages.nextMatching<{ type: string; requestId?: string }>(
+        (message) => message.type === "command.result" && message.requestId === "retry-parked",
+      ),
+    ).resolves.toMatchObject({ ok: true, command: "task.retry" });
+    const retried = await messages.nextMatching<{ type: string; activity?: Activity }>(
+      (message) =>
+        message.type === "session.activity" &&
+        message.activity?.tasks[taskId]?.state.status === "sleeping",
+    );
+    expect(retried.activity?.tasks[taskId]?.blocked).toBeUndefined();
+    await expectAlarm(stub, runAt);
+
+    // An unknown task fails the command instead of being ignored.
+    socket.send(JSON.stringify({ type: "task.retry", requestId: "retry-unknown", taskId: 9_999 }));
+    await expect(
+      messages.nextMatching<{ type: string; requestId?: string }>(
+        (message) => message.type === "command.result" && message.requestId === "retry-unknown",
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: "command_failed" } });
+    socket.close(1000, "test complete");
+  });
+
   it("deduplicates a retried prompt by request ID", async () => {
     const sessionId = "retried-prompt";
     await configureOfflineModel(sessionId);
@@ -733,29 +845,25 @@ describe("chat application", () => {
   it("lists subagent conversations with their owner", async () => {
     const sessionId = "owned-conversations-listed";
     // A task-owned conversation, as history search creates for its subagent.
-    const childId = await seedSession(
-      sessionId,
-      createChatHarnessOptions(async () => {}),
-      async (harness) => {
-        const root = await harness.root(BACKGROUND_CONTEXT);
-        return root.commit(async (tx) => {
-          const task = await tx.createTask(
-            DeliverScheduledInstruction,
-            {
-              id: "schedule:owner",
-              conversationId: root.id,
-              instruction: "Owner only",
-              runAt: Date.now() + 3_600_000,
-            },
-            { ownership: { kind: "conversation" }, background: true },
-          );
-          const child = await tx.createConversation({
-            ownership: { kind: "task", taskId: task },
-          });
-          return child.id;
-        }, BACKGROUND_CONTEXT);
-      },
-    );
+    const childId = await seedSession(sessionId, createChatHarnessOptions(), async (harness) => {
+      const root = await harness.root(BACKGROUND_CONTEXT);
+      return root.commit(async (tx) => {
+        const task = await tx.createTask(
+          DeliverScheduledInstruction,
+          {
+            id: "schedule:owner",
+            conversationId: root.id,
+            instruction: "Owner only",
+            runAt: Date.now() + 3_600_000,
+          },
+          { ownership: { kind: "conversation" }, background: true },
+        );
+        const child = await tx.createConversation({
+          ownership: { kind: "task", taskId: task },
+        });
+        return child.id;
+      }, BACKGROUND_CONTEXT);
+    });
 
     const response = await exports.default.fetch(`https://example.com/api/sessions/${sessionId}`, {
       headers: { Upgrade: "websocket" },
@@ -763,13 +871,14 @@ describe("chat application", () => {
     const socket = response.webSocket!;
     const messages = jsonMessages(socket);
     socket.accept();
-    const snapshot = await messages.next<{
+    // The reopened Session resumes the delivery, which goes to sleep: its activity update may precede the snapshot.
+    const snapshot = await messages.nextMatching<{
       type: string;
       session: {
         conversations: unknown[];
         activity: { tasks: Record<string, unknown> };
       };
-    }>();
+    }>(({ type }) => type === "session.snapshot");
     expect(snapshot).toMatchObject({
       type: "session.snapshot",
       session: {

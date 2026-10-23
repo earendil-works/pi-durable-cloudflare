@@ -6,7 +6,6 @@ import {
   configure,
   createRegistry,
   defineExtension,
-  type ConversationId,
   Harness,
   ROOT_CONVERSATION_ID,
   type SubmissionRecord,
@@ -15,10 +14,40 @@ import {
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { describe, expect, it } from "vitest";
 import { DeliverScheduledInstruction } from "../src/schedule.ts";
+import { expectAlarm } from "./alarm.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 const openStorage = (state: DurableObjectState) => openDurableObjectSqliteStorage(state.storage);
+
+/** Write state as an earlier process would have, beside the live Session's harness, then evict the Session. */
+async function seed<T>(
+  stub: DurableObjectStub,
+  write: (harness: Harness) => Promise<T>,
+): Promise<T> {
+  const result = await runInDurableObject(stub, async (_instance, state) => {
+    // Let the Session finish opening its harness before writing beside it.
+    await state.blockConcurrencyWhile(async () => {});
+    const registry = createRegistry();
+    registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
+    const harness = await Harness.open(
+      await openStorage(state),
+      { models: createModels(), registry },
+      context,
+    );
+    try {
+      await harness.root(context, {
+        init: (tx, conversationId) =>
+          configure(tx, conversationId, { thinkingLevel: "off", tools: [] }),
+      });
+      return await write(harness);
+    } finally {
+      await harness.close(context);
+    }
+  });
+  await evictDurableObject(stub);
+  return result;
+}
 
 async function openFauxHarness(
   storage: Storage,
@@ -92,60 +121,35 @@ describe("session recovery", () => {
     expect(status).toBe("unanswered");
   });
 
-  it("re-arms and submits a persisted scheduled instruction after eviction", async () => {
-    const sessionId = "scheduled-instruction-recovery";
-    const stub = env.SESSIONS.getByName(sessionId);
-    await runInDurableObject(stub, async (_instance, state) => {
-      const registry = createRegistry();
-      registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
-      const harness = await Harness.open(
-        await openStorage(state),
-        { models: createModels(), registry },
+  it("re-arms a persisted scheduled instruction after eviction and submits it from the alarm", async () => {
+    const stub = env.SESSIONS.getByName("scheduled-instruction-recovery");
+    const runAt = Date.now() + 1_500;
+    await seed(stub, (harness) =>
+      harness.commit(
+        (tx) =>
+          tx.createTask(
+            DeliverScheduledInstruction,
+            {
+              id: "schedule:integration",
+              conversationId: ROOT_CONVERSATION_ID,
+              instruction: "Check the oven",
+              runAt,
+            },
+            {
+              ownership: { kind: "conversation" },
+              conversationId: ROOT_CONVERSATION_ID,
+              background: true,
+            },
+          ),
         context,
-      );
-      try {
-        await harness.root(context, {
-          init: (tx, conversationId) =>
-            configure(tx, conversationId, {
-              thinkingLevel: "off",
-              tools: [],
-            }),
-        });
-        await harness.commit(
-          (tx) =>
-            tx.createTask(
-              DeliverScheduledInstruction,
-              {
-                id: "schedule:integration",
-                conversationId: ROOT_CONVERSATION_ID,
-                instruction: "Check the oven",
-                runAt: Date.now() + 200,
-              },
-              {
-                ownership: { kind: "conversation" },
-                conversationId: ROOT_CONVERSATION_ID,
-                background: true,
-              },
-            ),
-          context,
-        );
-      } finally {
-        await harness.close(context);
-      }
-    });
-    await evictDurableObject(stub);
-
-    const reopened = await exports.default.fetch(`https://example.com/api/sessions/${sessionId}`, {
-      headers: { Upgrade: "websocket" },
-    });
-    expect(reopened.status).toBe(101);
-    reopened.webSocket!.accept();
-    reopened.webSocket!.close(1000, "test setup complete");
-    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).not.toBe(
-      null,
+      ),
     );
-    await evictDurableObject(stub);
-    await new Promise((resolve) => setTimeout(resolve, 220));
+
+    // The reopened Session resumes the delivery, which sleeps; `onWake` moves the alarm to its deadline.
+    await expectAlarm(stub, runAt);
+    // The live instance keeps no timer for the sleep: only its alarm handler can make the delivery runnable.
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, runAt - Date.now()) + 20));
+    // The alarm may already have fired by itself; running it again is harmless (alarms are at-least-once).
     await runDurableObjectAlarm(stub);
 
     let submission: SubmissionRecord | undefined;
@@ -165,54 +169,16 @@ describe("session recovery", () => {
     });
   });
 
-  it("deletes the platform alarm when scheduled work is no longer actionable", async () => {
-    const sessionId = "obsolete-platform-alarm";
-    const stub = env.SESSIONS.getByName(sessionId);
-    await runInDurableObject(stub, async (_instance, state) => {
-      const registry = createRegistry();
-      registry.install(defineExtension({ name: "schedule", tasks: [DeliverScheduledInstruction] }));
-      const harness = await Harness.open(
-        await openStorage(state),
-        { models: createModels(), registry },
-        context,
-      );
-      try {
-        await harness.root(context, {
-          init: (tx, conversationId) =>
-            configure(tx, conversationId, {
-              thinkingLevel: "off",
-              tools: [],
-            }),
-        });
-        await harness.commit(
-          (tx) =>
-            tx.createTask(
-              DeliverScheduledInstruction,
-              {
-                id: "schedule:missing-conversation",
-                conversationId: 999 as ConversationId,
-                instruction: "This cannot be delivered",
-                runAt: Date.now() - 1,
-              },
-              {
-                ownership: { kind: "conversation" },
-                conversationId: ROOT_CONVERSATION_ID,
-                background: true,
-              },
-            ),
-          context,
-        );
-        await state.storage.setAlarm(Date.now());
-      } finally {
-        await harness.close(context);
-      }
-    });
-
-    await evictDurableObject(stub);
-    await runDurableObjectAlarm(stub);
-
-    expect(await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm())).toBe(
-      null,
+  it("clears an early alarm that finds an idle Session", async () => {
+    const stub = env.SESSIONS.getByName("early-platform-alarm");
+    // A live, idle Session: `onWake` reports nothing to do, and does not report it again unchanged.
+    await expectAlarm(stub, null);
+    await runInDurableObject(stub, (_instance, state) =>
+      state.storage.setAlarm(Date.now() + 30_000),
     );
+
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    // The handler arms a heartbeat before resuming, then re-arms from the Harness, which has no work.
+    await expectAlarm(stub, null);
   });
 });

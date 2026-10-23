@@ -9,16 +9,13 @@ import {
 } from "@earendil-works/pi-durable";
 import { DeliverScheduledInstruction } from "./schedule.ts";
 import { conversationSearchExtension, searchHistoryTool } from "./search.ts";
-import { createScheduleTool, getWeatherTool } from "./tools.ts";
+import { getWeatherTool, scheduleTool } from "./tools.ts";
 
 const models = createModels();
 models.setProvider(openaiProvider());
 
 /** Application-owned, platform-independent agent composition. */
-export function createChatHarnessOptions(
-  ensureWakeupAt: (timestamp: number) => Promise<void>,
-): HarnessOptions {
-  const scheduleTool = createScheduleTool(ensureWakeupAt);
+export function createChatHarnessOptions(): HarnessOptions {
   const chatExtension = defineExtension({
     name: "chat",
     tasks: [DeliverScheduledInstruction],
@@ -50,11 +47,7 @@ export function createChatHarnessOptions(
   return {
     models,
     registry,
-    settings: {
-      extensions: [chatExtension],
-      // Retention timers are active Durable Object references and prevent hibernation.
-      documentRetentionMs: 0,
-    },
+    settings: { extensions: [chatExtension] },
     conversationCreated: (tx, conversation) =>
       conversation.owner === undefined && conversation.parent === undefined
         ? configure(tx, conversation.id, defaultAgent)

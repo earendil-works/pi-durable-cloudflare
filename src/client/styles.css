@@ -115,7 +115,8 @@ body:has(.session-workspace) {
 }
 
 .activity-toggle,
-.activity-header button {
+.activity-header button,
+.activity-task-retry {
   min-block-size: 2.75rem;
 }
 
@@ -210,10 +211,15 @@ body:has(.session-workspace) {
 
 .activity-task header span,
 .activity-task-status,
+.activity-task-blocked,
 .activity-task-conversation,
 .activity-task-owned,
 .activity-task-flags {
   font-size: 0.875rem;
+}
+
+.activity-task-blocked {
+  font-weight: 700;
 }
 
 .activity-task header span {

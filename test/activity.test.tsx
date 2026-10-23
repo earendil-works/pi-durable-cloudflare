@@ -34,6 +34,26 @@ const graph = {
       state: { status: "pending", phase: "start" },
       conversations: [],
     },
+    "7": {
+      id: 7,
+      kind: "app.deliver-scheduled-instruction",
+      conversationId: 1,
+      background: true,
+      abortRequested: false,
+      state: { status: "sleeping", phase: "wait", until: Date.UTC(2026, 9, 1, 9) },
+      blocked: "restart_limit",
+      conversations: [],
+    },
+    "8": {
+      id: 8,
+      kind: "app.retired-task",
+      conversationId: 1,
+      background: true,
+      abortRequested: false,
+      state: { status: "pending", phase: "start" },
+      blocked: "missing_task",
+      conversations: [],
+    },
   },
 } as unknown as TaskGraph;
 
@@ -45,15 +65,23 @@ describe("activity rendering", () => {
         activeConversationId: 1,
         onClose: () => undefined,
         onOpenConversation: () => undefined,
+        onRetryTask: async () => true,
       }),
     );
 
     expect(markup).toContain("Activity");
-    expect(markup).toContain("3 active tasks");
+    expect(markup).toContain("5 active tasks");
     expect(markup).toContain("pi.tool");
     expect(markup).toContain("Waiting for #5");
+    expect(markup).toContain(
+      `Sleeping until ${new Date(Date.UTC(2026, 9, 1, 9)).toLocaleString()} · wait`,
+    );
     expect(markup).toContain('aria-label="Children of task 4"');
     expect(markup).toContain('href="?conversation=2"');
+    expect(markup).toContain("Parked · cut off by repeated crashes");
+    expect(markup).toContain("Blocked · no installed task definition");
+    // Only the task parked by the restart limit offers a retry; another blocked task does not.
+    expect(markup.match(/>Retry</g)).toHaveLength(1);
     expect(markup).toContain("Background");
     expect(markup).toContain("Aborting");
   });
@@ -65,6 +93,7 @@ describe("activity rendering", () => {
         activeConversationId: 1,
         onClose: () => undefined,
         onOpenConversation: () => undefined,
+        onRetryTask: async () => true,
       }),
     );
 

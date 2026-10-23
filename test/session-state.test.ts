@@ -431,6 +431,41 @@ describe("session event reducer", () => {
       state: { status: "running", phase: "stream" },
     });
 
+    const sleeping = {
+      id: 6,
+      kind: "app.deliver-scheduled-instruction",
+      conversationId: 1,
+      background: true,
+      abortRequested: false,
+      state: { status: "sleeping", phase: "wait", until: 1_800_000_000_000 },
+      conversations: [],
+    };
+    state = sessionReducer(state, {
+      type: "event",
+      event: event({ type: "session.activity", activity: { tasks: { "6": sleeping } } }),
+    });
+    expect(state.activity).toEqual({ tasks: { "6": sleeping } });
+    expect(() =>
+      event({
+        type: "session.activity",
+        activity: {
+          tasks: { "6": { ...sleeping, state: { status: "sleeping", phase: "wait" } } },
+        },
+      }),
+    ).toThrow("Activity sleeping task state is invalid");
+    expect(
+      event({
+        type: "session.activity",
+        activity: { tasks: { "6": { ...sleeping, blocked: "restart_limit" } } },
+      }),
+    ).toMatchObject({ activity: { tasks: { "6": { blocked: "restart_limit" } } } });
+    expect(() =>
+      event({
+        type: "session.activity",
+        activity: { tasks: { "6": { ...sleeping, blocked: "tired" } } },
+      }),
+    ).toThrow("Activity task blocked reason is invalid");
+
     state = sessionReducer(state, {
       type: "event",
       event: event({ type: "session.activity", activity: { tasks: {} } }),

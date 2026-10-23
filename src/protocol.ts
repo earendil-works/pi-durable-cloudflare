@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  BlockedReason,
   InboxState,
   TaskGraph,
   TaskGraphNode,
@@ -114,6 +115,12 @@ export type ClientCommand =
       readonly requestId: string;
       readonly conversationId: number;
       readonly content: string;
+    }
+  | {
+      /** Run a task parked by the restart limit again. */
+      readonly type: "task.retry";
+      readonly requestId: string;
+      readonly taskId: number;
     };
 export type ClientCommandType = Exclude<ClientCommand["type"], "presence.typing">;
 
@@ -206,6 +213,7 @@ const commandTypes = new Set<ClientCommandType>([
   "conversation.create",
   "conversation.fork",
   "prompt.submit",
+  "task.retry",
 ]);
 
 const requireCommandType = (value: unknown): ClientCommandType => {
@@ -223,6 +231,20 @@ const requireError = (value: unknown): { readonly code: string; readonly message
 };
 
 const TASK_OUTCOMES = new Set(["completed", "failed", "aborted", "orphaned", "faulted"]);
+const BLOCKED_REASONS = new Set<BlockedReason>([
+  "missing_task",
+  "task_too_old",
+  "migration_failed",
+  "restart_limit",
+]);
+
+const optionalBlockedReason = (value: unknown): BlockedReason | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !BLOCKED_REASONS.has(value as BlockedReason)) {
+    throw new Error("Activity task blocked reason is invalid");
+  }
+  return value as BlockedReason;
+};
 
 const taskGraphState = (value: unknown): TaskGraphState => {
   if (!isRecord(value) || typeof value.status !== "string") {
@@ -231,6 +253,12 @@ const taskGraphState = (value: unknown): TaskGraphState => {
   if (value.status === "pending" || value.status === "running") {
     if (typeof value.phase !== "string") throw new Error("Activity task phase is invalid");
     return { status: value.status, phase: value.phase };
+  }
+  if (value.status === "sleeping") {
+    if (typeof value.phase !== "string" || !Number.isFinite(value.until)) {
+      throw new Error("Activity sleeping task state is invalid");
+    }
+    return { status: value.status, phase: value.phase, until: value.until as number };
   }
   if (value.status === "waiting") {
     if (
@@ -278,6 +306,7 @@ const parseTaskGraph = (value: unknown): TaskGraph => {
     const id = requireId(candidate.id, "activity.task.id");
     if (key !== String(id)) throw new Error("Activity task key does not match its id");
     const owner = optionalId(candidate.owner, "activity.task.owner");
+    const blocked = optionalBlockedReason(candidate.blocked);
     tasks[key] = {
       id: id as TaskGraphNode["id"],
       kind: candidate.kind,
@@ -289,6 +318,7 @@ const parseTaskGraph = (value: unknown): TaskGraph => {
       background: candidate.background,
       abortRequested: candidate.abortRequested,
       state: taskGraphState(candidate.state),
+      ...(blocked === undefined ? {} : { blocked }),
       conversations: candidate.conversations.map((conversationId) =>
         requireId(conversationId, "activity.task.conversations"),
       ) as unknown as TaskGraphNode["conversations"],
@@ -371,6 +401,8 @@ export function parseClientCommand(message: string): ClientCommand {
         content: value.content,
       };
     }
+    case "task.retry":
+      return { type: value.type, requestId, taskId: requireId(value.taskId, "taskId") };
     default:
       throw new InvalidClientCommand(`Unknown command type: ${value.type}`);
   }

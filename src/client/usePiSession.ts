@@ -26,6 +26,7 @@ export interface PiSession {
   forkConversation(conversationId: number, entryId: number): void;
   setTyping(conversationId: number, typing: boolean): void;
   submitPrompt(conversationId: number, content: string): Promise<boolean>;
+  retryTask(taskId: number): Promise<boolean>;
 }
 
 export function usePiSession(
@@ -241,6 +242,14 @@ export function usePiSession(
     [outbox, sendRetriable],
   );
 
+  const retryTask = useCallback(
+    (taskId: number): Promise<boolean> =>
+      new Promise((resolve) => {
+        sendRetriable({ type: "task.retry", requestId: crypto.randomUUID(), taskId }, resolve);
+      }),
+    [sendRetriable],
+  );
+
   const activeConversation =
     state.activeConversationId === undefined
       ? undefined
@@ -258,5 +267,6 @@ export function usePiSession(
     forkConversation,
     setTyping,
     submitPrompt,
+    retryTask,
   };
 }

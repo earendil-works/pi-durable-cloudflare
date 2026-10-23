@@ -13,11 +13,11 @@ import {
   InboxDoc,
   type TaskGraph,
   type TaskId,
+  type Wake,
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { normalizeUsername } from "./identity.ts";
-import { scheduledDeadline } from "./schedule.ts";
 import { createChatHarnessOptions } from "./chat.ts";
 import {
   InvalidClientCommand,
@@ -47,7 +47,8 @@ const reportError = (
   );
 };
 
-const RECOVERY_ALARM_DELAY_MS = 60_000;
+/** While work can run, the alarm stays this far ahead, so an evicted instance is woken to resume it. */
+const HEARTBEAT_MS = 60_000;
 const CONVERSATION_PAGE_SIZE = 100;
 
 type ConversationCommandReceipt =
@@ -73,6 +74,8 @@ const ConversationCommandReceipts = defineDocFamily<
   version: 1,
   scope: "session",
   initial: () => ({}),
+  // Written once per request ID, so there is no delta history to bound.
+  checkpointWhen: () => false,
 });
 
 type SessionConnectionState = {
@@ -158,8 +161,7 @@ export class Session extends DurableObject<Env> {
   readonly #eventStreams = new Map<WebSocket, AgentEventStream>();
   readonly #typingConnections = new Set<WebSocket>();
   readonly #connectionOperations = new KeyedSerialQueue<WebSocket>();
-  readonly #alarmTaskWatches = new Set<TaskId>();
-  #alarmUpdate: Promise<void> = Promise.resolve();
+  #alarmWrites: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -167,15 +169,21 @@ export class Session extends DurableObject<Env> {
   }
 
   async #initialize(): Promise<void> {
+    // A fallback before anything can throw: an object whose open or recovery fails is started again.
+    const fallback = Date.now() + HEARTBEAT_MS;
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > fallback) await this.ctx.storage.setAlarm(fallback);
+
     const storage = await openDurableObjectSqliteStorage(this.ctx.storage);
-    const chatOptions = createChatHarnessOptions((timestamp) =>
-      this.#setAlarmNoLaterThan(timestamp),
-    );
     const harness = await Harness.open(
       storage,
       {
-        ...chatOptions,
-        onReport: (error) => reportError("Harness background task failed", error),
+        ...createChatHarnessOptions(),
+        // `info.type` says what happened, e.g. `task_faulted` or `task_parked`, with the task and extension.
+        onReport: (error, info) => reportError("Harness reported a failure", error, { ...info }),
+        // Called after open and whenever the next wake changes. With `onWake`, the Harness keeps no timer for
+        // sleeps: the alarm calls `resume()`. A failed alarm write resets the object; it arms again on restart.
+        onWake: (wake) => void this.#arm(wake).catch(() => this.ctx.abort("Alarm write failed")),
       },
       BACKGROUND_CONTEXT,
     );
@@ -206,7 +214,10 @@ export class Session extends DurableObject<Env> {
         }
       });
       await this.#restoreEventStreams();
-      await this.#refreshAlarm();
+      // Armed before `resume()` runs anything, as for any call that can start work.
+      await this.#arm(harness.wake());
+      // Continue work a lost instance left, and make due sleeps runnable.
+      harness.resume();
     } catch (error) {
       activity?.dispose();
       await harness.close(BACKGROUND_CONTEXT);
@@ -244,7 +255,12 @@ export class Session extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
-    await this.#refreshAlarm();
+    // Armed before `resume()` can start work, as on open.
+    await this.#arm({ ...this.#harness.wake(), active: true });
+    this.#harness.resume();
+    // Alarms are at-least-once, and `onWake` repeats no unchanged wake: an early or spurious alarm would otherwise
+    // leave the heartbeat armed with nothing to do. `wake()` already counts the work `resume()` made runnable.
+    await this.#arm(this.#harness.wake());
   }
 
   override async webSocketMessage(socket: WebSocket, message: WSMessage): Promise<void> {
@@ -431,7 +447,9 @@ export class Session extends DurableObject<Env> {
         const conversation = await this.#requireConversation(
           command.conversationId as ConversationId,
         );
-        await this.#setAlarmNoLaterThan(Date.now() + RECOVERY_ALARM_DELAY_MS);
+        // Arm before admitting work: `onWake` runs after the commit, so an instance that dies in between is
+        // still woken. An early alarm is harmless; a missing one strands the turn.
+        await this.#arm({ ...this.#harness.wake(), active: true });
         const submission = await conversation.submit(
           {
             type: "input",
@@ -453,16 +471,19 @@ export class Session extends DurableObject<Env> {
           conversationId: conversation.id,
           submissionId: submission.id,
         });
-        void submission
-          .wait(BACKGROUND_CONTEXT)
-          .then(() => this.#refreshAlarm())
-          .catch((error: unknown) => reportError("Prompt alarm reconciliation failed", error));
-        try {
-          await this.#refreshAlarm();
-        } catch (error) {
-          reportError("Prompt alarm reconciliation failed", error);
-        }
+        return;
       }
+      case "task.retry":
+        // Retrying a parked task starts work, so arm first. A task that is not parked is left alone, which makes a
+        // replayed command harmless; an unknown task rejects.
+        await this.#arm({ ...this.#harness.wake(), active: true });
+        await this.#harness.retryTask(command.taskId as TaskId, BACKGROUND_CONTEXT);
+        this.#send(socket, {
+          type: "command.result",
+          command: command.type,
+          requestId: command.requestId,
+          ok: true,
+        });
     }
   }
 
@@ -622,64 +643,20 @@ export class Session extends DurableObject<Env> {
     }
   }
 
-  #refreshAlarm(): Promise<void> {
-    return this.#serializeAlarmUpdate(async () => {
-      const { tasks } = await this.#harness.inspect(BACKGROUND_CONTEXT);
-      const now = Date.now();
-      let nextAlarm: number | undefined;
-      const tasksToResume: TaskId[] = [];
-
-      for (const task of tasks) {
-        if (task.state.kind === "blocked") continue;
-        const scheduled = scheduledDeadline(task);
-        const waitsForFuture =
-          scheduled !== undefined && scheduled > now && !task.record.abortRequested;
-        const deadline = waitsForFuture ? scheduled : now + RECOVERY_ALARM_DELAY_MS;
-        nextAlarm = nextAlarm === undefined ? deadline : Math.min(nextAlarm, deadline);
-        if (!waitsForFuture) tasksToResume.push(task.record.id);
-      }
-
-      await this.#replaceAlarm(nextAlarm);
-      // waitForTask starts the scheduler, so persist its recovery alarm first.
-      for (const taskId of tasksToResume) this.#refreshAlarmWhenTaskSettles(taskId);
+  /** The one alarm: the earliest sleep, or a recovery heartbeat while work can run, whichever comes first. */
+  #arm(wake: Wake): Promise<void> {
+    // Serialized, so an older wake cannot overwrite a newer, earlier deadline.
+    const write = this.#alarmWrites.then(async () => {
+      const heartbeat = wake.active ? Date.now() + HEARTBEAT_MS : undefined;
+      // `wake.at` is on the Harness clock, which is the default `Date.now`.
+      const at =
+        heartbeat === undefined || wake.at === undefined
+          ? (heartbeat ?? wake.at)
+          : Math.min(heartbeat, wake.at);
+      if (at === undefined) await this.ctx.storage.deleteAlarm();
+      else await this.ctx.storage.setAlarm(at);
     });
-  }
-
-  #setAlarmNoLaterThan(timestamp: number): Promise<void> {
-    return this.#serializeAlarmUpdate(() =>
-      this.ctx.storage.transaction(async (transaction) => {
-        const current = await transaction.getAlarm();
-        if (current === null || timestamp < current) await transaction.setAlarm(timestamp);
-      }),
-    );
-  }
-
-  #serializeAlarmUpdate(operation: () => Promise<void>): Promise<void> {
-    const update = this.#alarmUpdate.then(operation, operation);
-    this.#alarmUpdate = update;
-    return update;
-  }
-
-  #refreshAlarmWhenTaskSettles(taskId: TaskId): void {
-    if (this.#alarmTaskWatches.has(taskId)) return;
-    this.#alarmTaskWatches.add(taskId);
-    void this.#harness
-      .waitForTask(taskId, BACKGROUND_CONTEXT)
-      .then(() => this.#refreshAlarm())
-      .catch((error: unknown) =>
-        reportError("Harness task alarm reconciliation failed", error, { taskId }),
-      )
-      .finally(() => this.#alarmTaskWatches.delete(taskId));
-  }
-
-  #replaceAlarm(timestamp: number | undefined): Promise<void> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.getAlarm();
-      if (timestamp === undefined) {
-        if (current !== null) await transaction.deleteAlarm();
-      } else if (current !== timestamp) {
-        await transaction.setAlarm(timestamp);
-      }
-    });
+    this.#alarmWrites = write.catch(() => undefined);
+    return write;
   }
 }

@@ -1,9 +1,4 @@
-import {
-  type ConversationId,
-  defineDoc,
-  defineTask,
-  type TaskInspection,
-} from "@earendil-works/pi-durable";
+import { type ConversationId, defineDoc, defineTask } from "@earendil-works/pi-durable";
 import { formatScheduledInstruction } from "./protocol.ts";
 
 export type ScheduleCadence = {
@@ -27,7 +22,7 @@ export type ScheduledInstruction = {
   readonly recurrence?: ScheduleRecurrence;
 };
 
-type DeliveryState = { phase: "wait" } | { phase: "deliver" };
+type DeliveryState = { phase: "wait" } | { phase: "mark" } | { phase: "deliver" };
 
 type LocalDateTime = {
   readonly year: number;
@@ -211,6 +206,9 @@ export const ScheduleDeliveries = defineDoc<{
   version: 1,
   scope: "session",
   initial: () => ({ active: [] }),
+  // Changed by every delivery for the life of the session: store a small base whenever none is active, as the
+  // built-in inbox does, so replay stays short.
+  checkpointWhen: (value) => value.active.length === 0,
 });
 
 export const DeliverScheduledInstruction = defineTask<ScheduledInstruction, DeliveryState, null>({
@@ -218,8 +216,10 @@ export const DeliverScheduledInstruction = defineTask<ScheduledInstruction, Deli
   version: 1,
   initial: () => ({ phase: "wait" }),
   phases: {
-    wait: async (task, runtime, context) => {
-      await runtime.sleep(task.input.runAt, context);
+    // A durable sleep: the task holds no invocation until runAt, and `onWake` moves the alarm.
+    wait: (task, runtime, context) =>
+      runtime.sleepUntil(task.input.runAt, { phase: "mark" }, context),
+    mark: async (task, runtime, context) => {
       await runtime.commit(async (tx) => {
         const deliveries = await tx.doc(ScheduleDeliveries);
         if (!deliveries.active.some(({ scheduleId }) => scheduleId === task.input.id)) {
@@ -283,25 +283,3 @@ const removeDelivery = (
   const index = deliveries.active.findIndex((delivery) => delivery.scheduleId === scheduleId);
   if (index !== -1) deliveries.active.splice(index, 1);
 };
-
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** Deadline of a delivery task that is still waiting, or `undefined` for other tasks. */
-export function scheduledDeadline(task: TaskInspection): number | undefined {
-  if (task.record.kind !== DeliverScheduledInstruction.definition.name) return undefined;
-  if (task.record.state.status === "completing" || task.record.state.status === "terminal") {
-    return undefined;
-  }
-  if (!isRecord(task.record.input) || !isRecord(task.record.state.checkpoint)) {
-    throw new Error(`Scheduled instruction task ${task.record.id} has invalid durable state`);
-  }
-  const runAt = task.record.input.runAt;
-  if (!Number.isSafeInteger(runAt) || (runAt as number) < 0) {
-    throw new Error(`Scheduled instruction task ${task.record.id} has an invalid runAt`);
-  }
-  const phase = task.record.state.checkpoint.phase;
-  if (phase === "wait") return runAt as number;
-  if (phase === "deliver") return undefined;
-  throw new Error(`Scheduled instruction task ${task.record.id} has an invalid phase`);
-}
