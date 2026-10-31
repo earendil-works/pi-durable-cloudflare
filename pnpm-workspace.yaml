@@ -2,15 +2,4 @@ allowBuilds:
   esbuild: true
   workerd: true
 minimumReleaseAgeExclude:
-  - "@cloudflare/vitest-plugin@1.4.4"
-  - "@cloudflare/workers-types@5.20261016.1"
-  - "@earendil-works/chord@1.4.0"
-  - "@earendil-works/pi-ai@1.4.0"
-  - "@earendil-works/pi-codemode@1.4.0"
-  - "@earendil-works/pi-durable@1.4.0"
-  - "@earendil-works/pi-telemetry@1.4.0"
-  - "@vitest/mocker@5.0.5"
-  - "@vitest/spy@5.0.5"
-  - miniflare@5.20261012.1-beta
-  - vitest@5.0.5
-  - wrangler@4.151.1
+  - "@cloudflare/workers-types@5.20261031.1"
