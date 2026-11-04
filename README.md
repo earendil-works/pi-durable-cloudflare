@@ -13,7 +13,7 @@ Pi Durable is experimental, so its APIs may still change.
 - Reconnect without losing committed transcripts or queued prompts.
 - Schedule one-time or recurring follow-ups.
 - Ask a search subagent about earlier conversations.
-- Open Activity to inspect live task ownership, waits, sleeps, tool calls, and background work while conversations run, and to retry a task parked after repeated crashes.
+- Open Activity to inspect live task ownership, waits, sleeps, tool calls, and background work while conversations run.
 
 This is a sample, not a production service. It intentionally has no authentication or rate limiting.
 
@@ -45,9 +45,9 @@ Open the local URL printed by Vite, create a session, and send a message. Open t
 The shortest path through the project is:
 
 - [`src/chat.ts`](src/chat.ts) defines the models, extensions, tools, and default agent.
-- [`src/session.ts`](src/session.ts) hosts the harness with Pi Durable's built-in Durable Object SQLite storage and connects it to Cloudflare's native hibernating WebSockets and alarms.
+- [`src/session.ts`](src/session.ts) hosts the harness with Pi Durable's built-in Durable Object SQLite storage and connects it to Cloudflare's native hibernating WebSockets and alarms. Each socket watches one conversation's view (`Conversation.watch()`): the server sends its first value, then its changes as Chord operations, and pages older entries on request.
 - [`src/tools.ts`](src/tools.ts), [`src/schedule.ts`](src/schedule.ts), and [`src/search.ts`](src/search.ts) contain the example tools and tasks.
-- [`src/client/`](src/client/) is the React client and its event-driven session state.
+- [`src/client/`](src/client/) is the React client. It applies the operations to each conversation's view, keeps the whole transcript with Pi Durable's `ConversationTranscript`, and renders the result: entries, and `pi.live` for the run, the streamed answer, tool progress, and failures.
 - [`test/`](test/) covers application flows including restart recovery, scheduling, forks, and inboxes. Pi Durable tests its built-in Cloudflare storage adapter inside a Durable Object itself.
 
 The code is the documentation for this integration. In particular, the tests are useful examples of restart behavior, scheduling, forks, and inboxes.

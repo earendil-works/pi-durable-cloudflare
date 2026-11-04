@@ -1,6 +1,9 @@
+import { assertValidOp, type Op } from "@earendil-works/chord/delta";
 import type {
-  AgentEvent,
   BlockedReason,
+  ConversationView,
+  Cursor,
+  EntryRecord,
   InboxState,
   TaskGraph,
   TaskGraphNode,
@@ -10,6 +13,8 @@ import type {
 export const ROOT_CONVERSATION_ID = 1;
 export const MAX_PROMPT_CHARACTERS = 100_000;
 export const MAX_REQUEST_ID_CHARACTERS = 256;
+/** Entries one `conversation.entries` command may ask for. */
+export const MAX_ENTRY_PAGE = 100;
 // JSON may escape each prompt code unit as six characters.
 export const MAX_CLIENT_FRAME_CHARACTERS =
   MAX_PROMPT_CHARACTERS * 6 + MAX_REQUEST_ID_CHARACTERS + 1024;
@@ -101,6 +106,16 @@ export type ClientCommand =
       readonly conversationId: number;
     }
   | {
+      /** A page of a conversation's transcript, for entries outside the view's window. */
+      readonly type: "conversation.entries";
+      readonly requestId: string;
+      readonly conversationId: number;
+      readonly minEntryId?: number;
+      readonly maxEntryId?: number;
+      readonly order: "ascending" | "descending";
+      readonly limit: number;
+    }
+  | {
       readonly type: "conversation.create";
       readonly requestId: string;
     }
@@ -115,12 +130,6 @@ export type ClientCommand =
       readonly requestId: string;
       readonly conversationId: number;
       readonly content: string;
-    }
-  | {
-      /** Run a task parked by the restart limit again. */
-      readonly type: "task.retry";
-      readonly requestId: string;
-      readonly taskId: number;
     };
 export type ClientCommandType = Exclude<ClientCommand["type"], "presence.typing">;
 
@@ -132,6 +141,8 @@ export type CommandResult =
       readonly ok: true;
       readonly conversationId?: number;
       readonly submissionId?: number;
+      /** For `conversation.entries`. */
+      readonly page?: { readonly items: readonly EntryRecord[]; readonly next?: Cursor };
     }
   | {
       readonly type: "command.result";
@@ -161,14 +172,16 @@ export type ServerEvent =
       readonly activity: TaskGraph;
     }
   | {
-      readonly type: "conversation.events";
+      /** The conversation's view, as a watch starts: a window over its transcript and its built-in documents. */
+      readonly type: "conversation.view";
       readonly conversationId: number;
-      readonly events: readonly AgentEvent[];
+      readonly view: ConversationView;
     }
   | {
-      readonly type: "conversation.inbox";
+      /** Changes to the view sent last, as Chord operations. */
+      readonly type: "conversation.ops";
       readonly conversationId: number;
-      readonly items: readonly QueuedInput[];
+      readonly ops: readonly Op[];
     }
   | {
       readonly type: "presence.typing";
@@ -208,12 +221,21 @@ const requireId = (value: unknown, name: string): number => {
 const optionalId = (value: unknown, name: string): number | undefined =>
   value === undefined ? undefined : requireId(value, name);
 
+/** An entry bound: an exclusive bound turned inclusive can be 0. */
+const optionalCommandId = (value: unknown, name: string): number | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new InvalidClientCommand(`${name} must be a non-negative integer`);
+  }
+  return value;
+};
+
 const commandTypes = new Set<ClientCommandType>([
   "conversation.open",
+  "conversation.entries",
   "conversation.create",
   "conversation.fork",
   "prompt.submit",
-  "task.retry",
 ]);
 
 const requireCommandType = (value: unknown): ClientCommandType => {
@@ -235,7 +257,6 @@ const BLOCKED_REASONS = new Set<BlockedReason>([
   "missing_task",
   "task_too_old",
   "migration_failed",
-  "restart_limit",
 ]);
 
 const optionalBlockedReason = (value: unknown): BlockedReason | undefined => {
@@ -401,14 +422,36 @@ export function parseClientCommand(message: string): ClientCommand {
         content: value.content,
       };
     }
-    case "task.retry":
-      return { type: value.type, requestId, taskId: requireId(value.taskId, "taskId") };
+    case "conversation.entries": {
+      if (value.order !== "ascending" && value.order !== "descending") {
+        throw new InvalidClientCommand("order must be ascending or descending");
+      }
+      if (
+        typeof value.limit !== "number" ||
+        !Number.isSafeInteger(value.limit) ||
+        value.limit < 1 ||
+        value.limit > MAX_ENTRY_PAGE
+      ) {
+        throw new InvalidClientCommand(`limit must be an integer from 1 to ${MAX_ENTRY_PAGE}`);
+      }
+      const minEntryId = optionalCommandId(value.minEntryId, "minEntryId");
+      const maxEntryId = optionalCommandId(value.maxEntryId, "maxEntryId");
+      return {
+        type: value.type,
+        requestId,
+        conversationId: requireId(value.conversationId, "conversationId"),
+        ...(minEntryId === undefined ? {} : { minEntryId }),
+        ...(maxEntryId === undefined ? {} : { maxEntryId }),
+        order: value.order,
+        limit: value.limit,
+      };
+    }
     default:
       throw new InvalidClientCommand(`Unknown command type: ${value.type}`);
   }
 }
 
-/** Validate the application envelope. Agent event payloads remain owned by pi-durable's typed protocol. */
+/** Validate the application envelope. View payloads remain owned by pi-durable's typed protocol. */
 export function parseServerEventEnvelope(message: string): ServerEvent {
   const value: unknown = JSON.parse(message);
   if (!isRecord(value) || typeof value.type !== "string") {
@@ -435,38 +478,27 @@ export function parseServerEventEnvelope(message: string): ServerEvent {
       return { type: value.type, conversation: parseConversationSummary(value.conversation) };
     case "session.activity":
       return { type: value.type, activity: parseTaskGraph(value.activity) };
-    case "conversation.events": {
+    case "conversation.view": {
       const conversationId = requireId(value.conversationId, "conversationId");
       if (
-        !Array.isArray(value.events) ||
-        !value.events.every((event) => isRecord(event) && typeof event.type === "string")
+        !isRecord(value.view) ||
+        !isRecord(value.view.conversation) ||
+        !Array.isArray(value.view.entries) ||
+        !isRecord(value.view.docs)
       ) {
-        throw new Error("Conversation events payload is invalid");
+        throw new Error("Conversation view payload is invalid");
       }
       return {
         type: value.type,
         conversationId,
-        events: value.events as unknown as readonly AgentEvent[],
+        view: value.view as unknown as ConversationView,
       };
     }
-    case "conversation.inbox": {
+    case "conversation.ops": {
       const conversationId = requireId(value.conversationId, "conversationId");
-      if (!Array.isArray(value.items)) throw new Error("Conversation inbox payload is invalid");
-      const items = value.items.map((item): QueuedInput => {
-        if (
-          !isRecord(item) ||
-          (item.mode !== "steer" && item.mode !== "followUp") ||
-          typeof item.text !== "string"
-        ) {
-          throw new Error("Queued input is invalid");
-        }
-        return {
-          submissionId: requireId(item.submissionId, "submissionId"),
-          mode: item.mode,
-          text: item.text,
-        };
-      });
-      return { type: value.type, conversationId, items };
+      if (!Array.isArray(value.ops)) throw new Error("Conversation operations payload is invalid");
+      for (const op of value.ops) assertValidOp(op);
+      return { type: value.type, conversationId, ops: value.ops as Op[] };
     }
     case "presence.typing": {
       const conversationId = requireId(value.conversationId, "conversationId");
@@ -484,6 +516,15 @@ export function parseServerEventEnvelope(message: string): ServerEvent {
       if (value.ok === true) {
         const conversationId = optionalId(value.conversationId, "conversationId");
         const submissionId = optionalId(value.submissionId, "submissionId");
+        if (
+          value.page !== undefined &&
+          (!isRecord(value.page) ||
+            !Array.isArray(value.page.items) ||
+            !value.page.items.every(isRecord) ||
+            (value.page.next !== undefined && !isRecord(value.page.next)))
+        ) {
+          throw new Error("Entries page is invalid");
+        }
         return {
           type: value.type,
           command,
@@ -491,6 +532,9 @@ export function parseServerEventEnvelope(message: string): ServerEvent {
           ok: true,
           ...(conversationId === undefined ? {} : { conversationId }),
           ...(submissionId === undefined ? {} : { submissionId }),
+          ...(value.page === undefined
+            ? {}
+            : { page: value.page as unknown as { items: EntryRecord[]; next?: Cursor } }),
         };
       }
       if (value.ok === false) {

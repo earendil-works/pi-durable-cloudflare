@@ -1,20 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
-import type { AttachedReplicatedState } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  type AgentEventStream,
   type Conversation,
   type ConversationId,
   type ConversationRecord,
+  type ConversationView,
   type Cursor,
   defineDocFamily,
   type EntryId,
   Harness,
-  InboxDoc,
   type TaskGraph,
-  type TaskId,
   type Wake,
-  watchEvents,
+  type WatchHandle,
 } from "@earendil-works/pi-durable";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 import { normalizeUsername } from "./identity.ts";
@@ -25,7 +22,6 @@ import {
   parseClientCommand,
   type ClientCommand,
   type ConversationSummary,
-  queuedInputs,
   type ServerEvent,
 } from "./protocol.ts";
 import { KeyedSerialQueue } from "./serial.ts";
@@ -157,8 +153,8 @@ const conversationSummary = (conversation: ConversationRecord): ConversationSumm
 
 export class Session extends DurableObject<Env> {
   #harness!: Harness;
-  #activity!: AttachedReplicatedState<TaskGraph>;
-  readonly #eventStreams = new Map<WebSocket, AgentEventStream>();
+  #activity!: WatchHandle<TaskGraph>;
+  readonly #views = new Map<WebSocket, WatchHandle<ConversationView>>();
   readonly #typingConnections = new Set<WebSocket>();
   readonly #connectionOperations = new KeyedSerialQueue<WebSocket>();
   #alarmWrites: Promise<void> = Promise.resolve();
@@ -179,8 +175,9 @@ export class Session extends DurableObject<Env> {
       storage,
       {
         ...createChatHarnessOptions(),
-        // `info.type` says what happened, e.g. `task_faulted` or `task_parked`, with the task and extension.
-        onReport: (error, info) => reportError("Harness reported a failure", error, { ...info }),
+        // `kind` says what happened, e.g. `task_faulted` or `task_interrupted`, with the task and extension.
+        onReport: ({ error, ...report }) =>
+          reportError("Harness reported a failure", error, report),
         // Called after open and whenever the next wake changes. With `onWake`, the Harness keeps no timer for
         // sleeps: the alarm calls `resume()`. A failed alarm write resets the object; it arms again on restart.
         onWake: (wake) => void this.#arm(wake).catch(() => this.ctx.abort("Alarm write failed")),
@@ -190,36 +187,39 @@ export class Session extends DurableObject<Env> {
 
     // A storage error closes the harness. Reset the object so the next event reopens it.
     void harness.closed.then((end) => {
-      if (end.reason === "failed") this.ctx.abort("Harness failed");
+      if (end.kind === "failed") this.ctx.abort("Harness failed");
     });
 
-    let activity: AttachedReplicatedState<TaskGraph> | undefined;
+    let activity: WatchHandle<TaskGraph> | undefined;
     try {
       this.#harness = harness;
-      activity = await harness.taskGraph(BACKGROUND_CONTEXT);
+      activity = await harness.watchTaskGraph(BACKGROUND_CONTEXT);
       this.#activity = activity;
-      activity.subscribe((value, _context, delivery) => {
-        if (delivery.kind === "update")
-          this.#broadcast({ type: "session.activity", activity: value });
+      activity.start(async (call) => {
+        if (call.kind === "value")
+          this.#broadcast({ type: "session.activity", activity: call.value });
       });
       // Subagents are created by background tool tasks, not client commands.
       // Notify connected clients when their conversation records are committed.
-      harness.subscribeCommits((publication) => {
-        for (const change of publication.changes) {
-          if (change.type !== "conversation" || change.value.owner === undefined) continue;
-          this.#broadcast({
-            type: "conversation.created",
-            conversation: conversationSummary(change.value),
-          });
-        }
+      harness.observeCommits({
+        advance: (publication) => {
+          for (const change of publication.changes) {
+            if (change.type !== "conversation" || change.value.owner === undefined) continue;
+            this.#broadcast({
+              type: "conversation.created",
+              conversation: conversationSummary(change.value),
+            });
+          }
+        },
+        end: () => {},
       });
-      await this.#restoreEventStreams();
+      await this.#restoreViews();
       // Armed before `resume()` runs anything, as for any call that can start work.
       await this.#arm(harness.wake());
       // Continue work a lost instance left, and make due sleeps runnable.
       harness.resume();
     } catch (error) {
-      activity?.dispose();
+      await activity?.stop();
       await harness.close(BACKGROUND_CONTEXT);
       throw error;
     }
@@ -330,7 +330,7 @@ export class Session extends DurableObject<Env> {
     try {
       await this.#connectionOperations.run(socket, async () => {
         this.#setTyping(socket, false);
-        await this.#stopEventStream(socket);
+        await this.#stopView(socket);
       });
     } catch (error) {
       reportError("Session WebSocket close failed", error);
@@ -344,7 +344,7 @@ export class Session extends DurableObject<Env> {
       await this.#connectionOperations.run(socket, async () => {
         reportError("Session WebSocket failed", error);
         this.#setTyping(socket, false);
-        await this.#stopEventStream(socket);
+        await this.#stopView(socket);
       });
     } catch (handlerError) {
       reportError("Session WebSocket error cleanup failed", handlerError);
@@ -374,6 +374,34 @@ export class Session extends DurableObject<Env> {
           ok: true,
         });
         return;
+      case "conversation.entries": {
+        const conversation = await this.#requireConversation(
+          command.conversationId as ConversationId,
+        );
+        const page = await conversation.entries(
+          {
+            ...(command.minEntryId === undefined
+              ? {}
+              : { minEntryId: command.minEntryId as EntryId }),
+            ...(command.maxEntryId === undefined
+              ? {}
+              : { maxEntryId: command.maxEntryId as EntryId }),
+            order: command.order,
+          },
+          command.limit,
+          undefined,
+          BACKGROUND_CONTEXT,
+        );
+        this.#send(socket, {
+          type: "command.result",
+          command: command.type,
+          requestId: command.requestId,
+          ok: true,
+          conversationId: conversation.id,
+          page: { items: page.items, ...(page.next === undefined ? {} : { next: page.next }) },
+        });
+        return;
+      }
       case "conversation.create": {
         const conversationId = await this.#harness.commit(async (tx) => {
           const doc = await tx.doc(ConversationCommandReceipts, command.requestId, null);
@@ -473,17 +501,6 @@ export class Session extends DurableObject<Env> {
         });
         return;
       }
-      case "task.retry":
-        // Retrying a parked task starts work, so arm first. A task that is not parked is left alone, which makes a
-        // replayed command harmless; an unknown task rejects.
-        await this.#arm({ ...this.#harness.wake(), active: true });
-        await this.#harness.retryTask(command.taskId as TaskId, BACKGROUND_CONTEXT);
-        this.#send(socket, {
-          type: "command.result",
-          command: command.type,
-          requestId: command.requestId,
-          ok: true,
-        });
     }
   }
 
@@ -526,50 +543,39 @@ export class Session extends DurableObject<Env> {
     restoreTyping = false,
   ): Promise<void> {
     this.#setTyping(socket, false);
-    await this.#stopEventStream(socket);
+    await this.#stopView(socket);
     const username = connectionState(socket)?.username ?? "Guest";
     setConnectionState(socket, { username });
-    const stream = await watchEvents(this.#harness, conversationId, BACKGROUND_CONTEXT);
-    this.#eventStreams.set(socket, stream);
+    const conversation = await this.#requireConversation(conversationId);
+    // A window over the transcript and the conversation's built-in documents: the run, the streamed answer, tool
+    // progress, the queue, the agent, and usage. The client pages older entries with `conversation.entries`.
+    const view = await conversation.watch(BACKGROUND_CONTEXT);
+    this.#views.set(socket, view);
     setConnectionState(socket, {
       username,
       conversationId,
       ...(restoreTyping ? { typing: true } : {}),
     });
     if (restoreTyping) this.#typingConnections.add(socket);
-    this.#send(socket, {
-      type: "conversation.events",
-      conversationId,
-      events: [stream.snapshot],
+    this.#send(socket, { type: "conversation.view", conversationId, view: view.value });
+    view.start(async (call) => {
+      if (this.#views.get(socket) !== view || call.kind !== "value") return;
+      this.#send(socket, { type: "conversation.ops", conversationId, ops: call.ops });
     });
-    await this.#sendInbox(socket, conversationId);
-    stream.start(async (events) => {
-      if (this.#eventStreams.get(socket) !== stream) return;
-      this.#send(socket, { type: "conversation.events", conversationId, events });
-      if (events.some(({ type }) => type === "inbox_update" || type === "snapshot")) {
-        await this.#sendInbox(socket, conversationId);
-      }
-    });
-    void stream.closed.finally(() => {
-      if (this.#eventStreams.get(socket) === stream) this.#eventStreams.delete(socket);
+    void view.closed.finally(() => {
+      if (this.#views.get(socket) === view) this.#views.delete(socket);
     });
     this.#broadcastTyping(conversationId);
   }
 
-  /** Inbox events carry only submission IDs; the queued text lives in the conversation's `pi.inbox` document. */
-  async #sendInbox(socket: WebSocket, conversationId: ConversationId): Promise<void> {
-    const inbox = await this.#harness.snapshot(InboxDoc, conversationId, BACKGROUND_CONTEXT);
-    this.#send(socket, { type: "conversation.inbox", conversationId, items: queuedInputs(inbox) });
+  async #stopView(socket: WebSocket): Promise<void> {
+    const view = this.#views.get(socket);
+    if (view === undefined) return;
+    this.#views.delete(socket);
+    await view.stop();
   }
 
-  async #stopEventStream(socket: WebSocket): Promise<void> {
-    const stream = this.#eventStreams.get(socket);
-    if (stream === undefined) return;
-    this.#eventStreams.delete(socket);
-    await stream.stop();
-  }
-
-  async #restoreEventStreams(): Promise<void> {
+  async #restoreViews(): Promise<void> {
     for (const socket of this.#connections()) {
       const attachment = connectionState(socket);
       if (attachment?.conversationId !== undefined) {

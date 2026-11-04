@@ -344,16 +344,29 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
               message.
             </p>
           ) : (
-            <TranscriptList
-              entries={activeConversation.entries}
-              tools={activeConversation.tools}
-              runActive={activeConversation.live !== null}
-              onFork={
-                activeConversationId === undefined
-                  ? undefined
-                  : (entryId) => session.forkConversation(activeConversationId, entryId)
-              }
-            />
+            <>
+              {activeConversation.earlier ? (
+                <button
+                  className="text-button transcript-load"
+                  type="button"
+                  onClick={() => session.loadEarlier(activeConversation.id)}
+                >
+                  Load earlier messages
+                </button>
+              ) : null}
+              <TranscriptList
+                entries={activeConversation.entries}
+                gaps={activeConversation.gaps}
+                tools={activeConversation.tools}
+                runActive={activeConversation.live !== null}
+                onFork={
+                  activeConversationId === undefined
+                    ? undefined
+                    : (entryId) => session.forkConversation(activeConversationId, entryId)
+                }
+                onFillGap={(gap) => session.fillGap(activeConversation.id, gap)}
+              />
+            </>
           )}
 
           {activeConversation?.live === null || activeConversation?.live === undefined ? null : (
@@ -448,7 +461,6 @@ export function ChatSession({ sessionId, username }: ChatSessionProps) {
         activeConversationId={activeConversationId}
         onClose={closeActivity}
         closeButtonRef={activityCloseRef}
-        onRetryTask={session.retryTask}
         onOpenConversation={(conversationId) => {
           if (conversationId !== session.activeConversationId) {
             window.history.pushState(null, "", `?conversation=${conversationId}`);

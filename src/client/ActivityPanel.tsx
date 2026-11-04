@@ -1,4 +1,4 @@
-import { useState, type MouseEvent, type ReactNode, type Ref } from "react";
+import type { MouseEvent, ReactNode, Ref } from "react";
 import type { BlockedReason, TaskGraph, TaskGraphNode } from "@earendil-works/pi-durable";
 
 interface ActivityPanelProps {
@@ -7,15 +7,12 @@ interface ActivityPanelProps {
   readonly onClose: () => void;
   readonly closeButtonRef?: Ref<HTMLButtonElement>;
   readonly onOpenConversation: (conversationId: number) => void;
-  /** Runs a parked task again; resolves whether the server accepted it. */
-  readonly onRetryTask: (taskId: number) => Promise<boolean>;
 }
 
 const blockedReasons: Record<BlockedReason, string> = {
   missing_task: "Blocked · no installed task definition",
   task_too_old: "Blocked · task definition too old",
   migration_failed: "Blocked · task migration failed",
-  restart_limit: "Parked · cut off by repeated crashes",
 };
 
 const taskStatus = (node: TaskGraphNode): string => {
@@ -40,9 +37,7 @@ export function ActivityPanel({
   onClose,
   closeButtonRef,
   onOpenConversation,
-  onRetryTask,
 }: ActivityPanelProps) {
-  const [retrying, setRetrying] = useState<ReadonlySet<number>>(new Set());
   const nodes = Object.values(graph?.tasks ?? {}).sort((left, right) => left.id - right.id);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const children = new Map<number, TaskGraphNode[]>();
@@ -71,18 +66,6 @@ export function ActivityPanel({
     onOpenConversation(conversationId);
   };
 
-  const retry = (taskId: number) => {
-    setRetrying((current) => new Set(current).add(taskId));
-    // A retried task leaves the parked state through the next activity update, which hides the button.
-    void onRetryTask(taskId).finally(() =>
-      setRetrying((current) => {
-        const next = new Set(current);
-        next.delete(taskId);
-        return next;
-      }),
-    );
-  };
-
   const conversationLink = (conversationId: number, label: string) => (
     <a
       href={`?conversation=${conversationId}`}
@@ -106,16 +89,6 @@ export function ActivityPanel({
           {node.blocked === undefined ? null : (
             <p className="activity-task-blocked">{blockedReasons[node.blocked]}</p>
           )}
-          {node.blocked === "restart_limit" ? (
-            <button
-              type="button"
-              className="activity-task-retry"
-              disabled={retrying.has(node.id)}
-              onClick={() => retry(node.id)}
-            >
-              {retrying.has(node.id) ? "Retrying…" : "Retry"}
-            </button>
-          ) : null}
           <p className="activity-task-conversation">
             {conversationLink(node.conversationId, `Conversation #${node.conversationId}`)}
             {node.owner === undefined ? null : ` · Owner task #${node.owner}`}

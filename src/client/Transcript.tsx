@@ -1,81 +1,116 @@
 import type { ToolDiagnostic } from "@earendil-works/pi-durable";
-import type { TranscriptEntry, TranscriptToolCall, ToolProgress } from "./session-state.ts";
+import type {
+  TranscriptEntry,
+  TranscriptGap,
+  TranscriptToolCall,
+  ToolProgress,
+} from "./session-state.ts";
 
 interface TranscriptListProps {
   readonly entries: readonly TranscriptEntry[];
+  /** Missing ranges, each shown after the entry it follows. */
+  readonly gaps?: readonly TranscriptGap[];
   readonly tools: readonly ToolProgress[];
   readonly runActive: boolean;
   readonly onFork?: (entryId: number) => void;
+  readonly onFillGap?: (gap: TranscriptGap) => void;
 }
 
-export function TranscriptList({ entries, tools, runActive, onFork }: TranscriptListProps) {
+export function TranscriptList({
+  entries,
+  gaps = [],
+  tools,
+  runActive,
+  onFork,
+  onFillGap,
+}: TranscriptListProps) {
   const { resultsByRequest, groupedResultIds } = correlateToolResults(entries);
   const progress = new Map(tools.map((tool) => [tool.callId, tool]));
+  const gapsAfter = new Map<number, TranscriptGap>(gaps.map((gap) => [gap.after, gap]));
 
   return (
     <ol className="transcript-list">
-      {entries.map((entry) => {
-        if (groupedResultIds.has(entry.id)) return null;
+      {entries.flatMap((entry) => {
+        const gap = gapsAfter.get(entry.id);
+        const row = transcriptRow(entry);
+        return gap === undefined
+          ? [row]
+          : [
+              row,
+              <li key={`gap-${gap.after}`}>
+                <button
+                  className="text-button transcript-load"
+                  type="button"
+                  onClick={() => onFillGap?.(gap)}
+                >
+                  Load missing messages
+                </button>
+              </li>,
+            ];
+      })}
+    </ol>
+  );
 
-        if (entry.toolCalls !== undefined && entry.toolCalls.length > 0) {
-          const results = resultsByRequest.get(entry.id);
-          return (
-            <li className="transcript-turn" key={entry.id}>
-              {entry.text.length > 0 ? (
-                <TranscriptMessage
-                  entry={entry}
-                  onFork={onFork === undefined ? undefined : () => onFork(entry.id)}
-                />
-              ) : (
-                <ToolRequest
-                  entry={entry}
-                  onFork={onFork === undefined ? undefined : () => onFork(entry.id)}
-                />
-              )}
-              <ol className="tool-executions" aria-label="Tool calls">
-                {entry.toolCalls.map((call) => (
-                  <li key={call.callId}>
-                    <ToolExecution
-                      call={call}
-                      progress={progress.get(call.callId)}
-                      result={results?.get(call.callId)}
-                      runActive={runActive}
-                    />
-                  </li>
-                ))}
-              </ol>
-            </li>
-          );
-        }
+  function transcriptRow(entry: TranscriptEntry) {
+    if (groupedResultIds.has(entry.id)) return null;
 
-        if (entry.toolResult !== undefined) {
-          return (
-            <li key={entry.id}>
-              <ToolExecution
-                call={{
-                  callId: entry.toolResult.callId,
-                  name: entry.toolResult.name,
-                  args: {},
-                }}
-                result={entry}
-                runActive={false}
-                showArguments={false}
-              />
-            </li>
-          );
-        }
-
-        return (
-          <li key={entry.id}>
+    if (entry.toolCalls !== undefined && entry.toolCalls.length > 0) {
+      const results = resultsByRequest.get(entry.id);
+      return (
+        <li className="transcript-turn" key={entry.id}>
+          {entry.text.length > 0 ? (
             <TranscriptMessage
               entry={entry}
               onFork={onFork === undefined ? undefined : () => onFork(entry.id)}
             />
-          </li>
-        );
-      })}
-    </ol>
-  );
+          ) : (
+            <ToolRequest
+              entry={entry}
+              onFork={onFork === undefined ? undefined : () => onFork(entry.id)}
+            />
+          )}
+          <ol className="tool-executions" aria-label="Tool calls">
+            {entry.toolCalls.map((call) => (
+              <li key={call.callId}>
+                <ToolExecution
+                  call={call}
+                  progress={progress.get(call.callId)}
+                  result={results?.get(call.callId)}
+                  runActive={runActive}
+                />
+              </li>
+            ))}
+          </ol>
+        </li>
+      );
+    }
+
+    if (entry.toolResult !== undefined) {
+      return (
+        <li key={entry.id}>
+          <ToolExecution
+            call={{
+              callId: entry.toolResult.callId,
+              name: entry.toolResult.name,
+              args: {},
+            }}
+            result={entry}
+            runActive={false}
+            showArguments={false}
+          />
+        </li>
+      );
+    }
+
+    return (
+      <li key={entry.id}>
+        <TranscriptMessage
+          entry={entry}
+          onFork={onFork === undefined ? undefined : () => onFork(entry.id)}
+        />
+      </li>
+    );
+  }
 }
 
 function correlateToolResults(entries: readonly TranscriptEntry[]): {

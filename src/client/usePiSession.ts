@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { TaskGraph } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { applyImmutable } from "@earendil-works/chord/delta";
+import {
+  ConversationTranscript,
+  type ConversationView,
+  type Cursor,
+  type EntryRecord,
+  type Page,
+  type TaskGraph,
+} from "@earendil-works/pi-durable";
 import PartySocket from "partysocket";
 import {
+  MAX_ENTRY_PAGE,
   MAX_PROMPT_CHARACTERS,
   parseServerEventEnvelope,
   ROOT_CONVERSATION_ID,
@@ -10,7 +20,20 @@ import {
   type ConversationSummary,
 } from "../protocol.ts";
 import { CommandOutbox, type RetriableCommand } from "./command-outbox.ts";
-import { initialSessionState, sessionReducer, type ConversationSnapshot } from "./session-state.ts";
+import {
+  initialSessionState,
+  sessionReducer,
+  type ConversationSnapshot,
+  type TranscriptGap,
+} from "./session-state.ts";
+
+type EntryPage = Page<EntryRecord, Cursor>;
+
+/** A `conversation.entries` command waiting for its result. */
+type PendingPage = {
+  readonly resolve: (page: EntryPage) => void;
+  readonly reject: (error: Error) => void;
+};
 
 const terminalProtocolClose = (code: number): boolean => code === 1002 || code === 1009;
 
@@ -26,7 +49,10 @@ export interface PiSession {
   forkConversation(conversationId: number, entryId: number): void;
   setTyping(conversationId: number, typing: boolean): void;
   submitPrompt(conversationId: number, content: string): Promise<boolean>;
-  retryTask(taskId: number): Promise<boolean>;
+  /** Loads the page of the transcript before the oldest entry loaded. */
+  loadEarlier(conversationId: number): void;
+  /** Loads the next page of entries missing in `gap`. */
+  fillGap(conversationId: number, gap: TranscriptGap): void;
 }
 
 export function usePiSession(
@@ -40,6 +66,62 @@ export function usePiSession(
   outboxRef.current ??= new CommandOutbox();
   const outbox = outboxRef.current;
   const selectedConversationRef = useRef(initialConversationId ?? ROOT_CONVERSATION_ID);
+  // A conversation's view as last received, to apply operations to, and the transcript the client holds, which keeps
+  // entries that left the view's window and pages in older ones.
+  const viewsRef = useRef(new Map<number, ConversationView>());
+  const transcriptsRef = useRef(new Map<number, ConversationTranscript>());
+  const pagesRef = useRef(new Map<string, PendingPage>());
+
+  const requestPage = useCallback(
+    (
+      conversationId: number,
+      query: { minEntryId?: number; maxEntryId?: number; order?: "ascending" | "descending" },
+      limit: number,
+    ): Promise<EntryPage> => {
+      const socket = socketRef.current;
+      if (socket === null || socket.readyState !== socket.OPEN) {
+        return Promise.reject(new Error("The session is not connected"));
+      }
+      const requestId = crypto.randomUUID();
+      return new Promise((resolve, reject) => {
+        pagesRef.current.set(requestId, { resolve, reject });
+        socket.send(
+          JSON.stringify({
+            type: "conversation.entries",
+            requestId,
+            conversationId,
+            ...(query.minEntryId === undefined ? {} : { minEntryId: query.minEntryId }),
+            ...(query.maxEntryId === undefined ? {} : { maxEntryId: query.maxEntryId }),
+            order: query.order ?? "descending",
+            limit: Math.min(limit, MAX_ENTRY_PAGE),
+          } satisfies ClientCommand),
+        );
+      });
+    },
+    [],
+  );
+
+  const transcriptFor = useCallback(
+    (conversationId: number): ConversationTranscript => {
+      let transcript = transcriptsRef.current.get(conversationId);
+      if (transcript === undefined) {
+        transcript = new ConversationTranscript((query, limit) =>
+          requestPage(conversationId, query, limit),
+        );
+        transcriptsRef.current.set(conversationId, transcript);
+      }
+      return transcript;
+    },
+    [requestPage],
+  );
+
+  const showView = useCallback(
+    (conversationId: number, view: ConversationView) => {
+      viewsRef.current.set(conversationId, view);
+      dispatch({ type: "view", conversationId, view: transcriptFor(conversationId).merge(view) });
+    },
+    [transcriptFor],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -78,6 +160,24 @@ export function usePiSession(
         terminal = true;
         failureMessage = "Server sent an invalid protocol frame.";
         socket.close(1002, "Invalid protocol frame");
+        return;
+      }
+
+      if (parsed.type === "conversation.view") {
+        showView(parsed.conversationId, parsed.view);
+        return;
+      }
+      if (parsed.type === "conversation.ops") {
+        const view = viewsRef.current.get(parsed.conversationId);
+        if (view !== undefined) showView(parsed.conversationId, applyImmutable(view, parsed.ops));
+        return;
+      }
+      if (parsed.type === "command.result" && parsed.command === "conversation.entries") {
+        const pending = pagesRef.current.get(parsed.requestId);
+        pagesRef.current.delete(parsed.requestId);
+        if (parsed.ok)
+          pending?.resolve({ items: parsed.page?.items ?? [], next: parsed.page?.next });
+        else pending?.reject(new Error(parsed.error.message));
         return;
       }
 
@@ -134,6 +234,10 @@ export function usePiSession(
       if (!terminal) dispatch({ type: "connection", status: "connecting" });
     });
     socket.addEventListener("close", (event) => {
+      for (const pending of pagesRef.current.values()) {
+        pending.reject(new Error("The session connection closed"));
+      }
+      pagesRef.current.clear();
       if (disposed) return;
       if (terminalProtocolClose(event.code)) {
         terminal = true;
@@ -157,7 +261,7 @@ export function usePiSession(
       socket.close(1000, "Session view closed");
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [outbox, sessionId, username]);
+  }, [outbox, sessionId, username, showView]);
 
   const send = useCallback((command: ClientCommand): boolean => {
     const socket = socketRef.current;
@@ -242,13 +346,23 @@ export function usePiSession(
     [outbox, sendRetriable],
   );
 
-  const retryTask = useCallback(
-    (taskId: number): Promise<boolean> =>
-      new Promise((resolve) => {
-        sendRetriable({ type: "task.retry", requestId: crypto.randomUUID(), taskId }, resolve);
-      }),
-    [sendRetriable],
-  );
+  const loadEarlier = useCallback((conversationId: number) => {
+    const transcript = transcriptsRef.current.get(conversationId);
+    if (transcript === undefined) return;
+    transcript.loadEarlier(BACKGROUND_CONTEXT).then(
+      (view) => dispatch({ type: "view", conversationId, view }),
+      (error: Error) => dispatch({ type: "error", message: error.message }),
+    );
+  }, []);
+
+  const fillGap = useCallback((conversationId: number, gap: TranscriptGap) => {
+    const transcript = transcriptsRef.current.get(conversationId);
+    if (transcript === undefined) return;
+    transcript.fillGap(gap, BACKGROUND_CONTEXT).then(
+      (view) => dispatch({ type: "view", conversationId, view }),
+      (error: Error) => dispatch({ type: "error", message: error.message }),
+    );
+  }, []);
 
   const activeConversation =
     state.activeConversationId === undefined
@@ -267,6 +381,7 @@ export function usePiSession(
     forkConversation,
     setTyping,
     submitPrompt,
-    retryTask,
+    loadEarlier,
+    fillGap,
   };
 }

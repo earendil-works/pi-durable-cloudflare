@@ -1,5 +1,11 @@
+import { applyImmutable } from "@earendil-works/chord/delta";
+import { ConversationTranscript, type ConversationView } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import { initialSessionState, sessionReducer } from "../src/client/session-state.ts";
+import {
+  initialSessionState,
+  sessionReducer,
+  type SessionState,
+} from "../src/client/session-state.ts";
 import { parseServerEventEnvelope, formatScheduledInstruction } from "../src/protocol.ts";
 
 const usage = {
@@ -24,77 +30,82 @@ const assistant = (text: string) => ({
 
 const event = (value: unknown) => parseServerEventEnvelope(JSON.stringify(value));
 
-describe("session event reducer", () => {
-  it("hydrates a late join and applies streamed message events", () => {
-    let state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "session.snapshot",
-        session: { conversations: [{ id: 1 }] },
+const user = (id: number, content: string) => ({
+  id,
+  conversationId: 1,
+  kind: "pi.user",
+  model: [{ role: "user", content, timestamp: 1 }],
+});
+
+const viewOf = (
+  entries: readonly object[],
+  docs: Record<string, object> = {},
+  before?: number,
+): ConversationView =>
+  ({
+    conversation: { id: 1 },
+    entries,
+    docs,
+    ...(before === undefined ? {} : { before }),
+  }) as unknown as ConversationView;
+
+/** A client transcript that never pages: the tests below only merge views. */
+const transcript = () => new ConversationTranscript(async () => ({ items: [] }));
+
+/** Merges `view` into `client` and shows it, as the session hook does. */
+const show = (
+  state: SessionState,
+  view: ConversationView,
+  client: ConversationTranscript = transcript(),
+): SessionState =>
+  sessionReducer(state, { type: "view", conversationId: 1, view: client.merge(view) });
+
+describe("session state", () => {
+  it("renders a late join and the streamed answer from view operations", () => {
+    const frame = event({
+      type: "conversation.view",
+      conversationId: 1,
+      view: viewOf([user(2, "Hello")], {
+        "pi.live": {
+          run: { taskId: 5, inputs: [3], turns: 0 },
+          generation: { attempt: 1, message: assistant("Hel") },
+        },
+        "pi.agent": { thinkingLevel: "off", tools: [] },
+        "pi.usage": { models: {}, tools: {} },
       }),
     });
-
-    state = sessionReducer(state, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "snapshot",
-            entries: [
-              {
-                id: 2,
-                conversationId: 1,
-                kind: "pi.user",
-                model: [{ role: "user", content: "Hello", timestamp: 1 }],
-              },
-            ],
-            run: { inputs: [3] },
-            generation: { attempt: 1, message: assistant("Hel") },
-            tools: [],
-            compactions: [],
-            inbox: [],
-            agent: { thinkingLevel: "off", tools: [] },
-            usage: { models: {}, tools: {} },
-          },
-        ],
-      }),
-    });
-
+    if (frame.type !== "conversation.view") throw new Error("Expected a view frame");
+    const client = transcript();
+    let view = frame.view;
+    let state = show(initialSessionState, view, client);
     expect(state.snapshots[1]).toMatchObject({
       entries: [{ role: "user", text: "Hello" }],
       live: { active: true, text: "Hel" },
-      tools: [],
       agent: { thinkingLevel: "off", tools: [] },
       usage: { models: {}, tools: {} },
     });
 
-    state = sessionReducer(state, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "message_update",
-            usage,
-            changes: [{ type: "text_delta", contentIndex: 0, delta: "lo" }],
-          },
-          {
-            type: "message_end",
-            entry: {
-              id: 4,
-              conversationId: 1,
-              kind: "pi.assistant",
-              model: [assistant("Hello")],
-            },
-          },
-          { type: "run_end", inputs: [3] },
-        ],
-      }),
-    });
+    const apply = (ops: unknown[]) => {
+      const update = event({ type: "conversation.ops", conversationId: 1, ops });
+      if (update.type !== "conversation.ops") throw new Error("Expected an operations frame");
+      view = applyImmutable(view, update.ops);
+      state = show(state, view, client);
+    };
 
+    apply([["a", ["docs", "pi.live", "generation", "message", "content", 0, "text"], "lo"]]);
+    expect(state.snapshots[1]?.live).toEqual({ active: true, text: "Hello" });
+
+    apply([
+      [
+        "p",
+        ["entries"],
+        1,
+        0,
+        [{ id: 4, conversationId: 1, kind: "pi.assistant", model: [assistant("Hello")] }],
+      ],
+      ["d", ["docs", "pi.live", "generation"]],
+      ["d", ["docs", "pi.live", "run"]],
+    ]);
     expect(state.snapshots[1]).toMatchObject({
       entries: [
         { role: "user", text: "Hello" },
@@ -104,124 +115,80 @@ describe("session event reducer", () => {
     });
   });
 
-  it("labels scheduled deliveries rather than user messages", () => {
-    const state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "snapshot",
-            entries: [
-              {
-                id: 2,
-                conversationId: 1,
-                kind: "pi.user",
-                model: [
-                  {
-                    role: "user",
-                    content: formatScheduledInstruction({
-                      id: "schedule:2",
-                      instruction: "Look outside the window",
-                    }),
-                    timestamp: 1,
-                  },
-                ],
-              },
-              {
-                id: 3,
-                conversationId: 1,
-                kind: "pi.user",
-                model: [
-                  {
-                    role: "user",
-                    content: formatScheduledInstruction({
-                      id: "schedule:3",
-                      instruction: "Check again tomorrow",
-                      recurrence: {
-                        cadence: { unit: "day", interval: 1 },
-                        timezone: "Europe/Vienna",
-                      },
-                    }),
-                    timestamp: 2,
-                  },
-                ],
-              },
-            ],
-            tools: [],
-            compactions: [],
-            inbox: [],
-            agent: { thinkingLevel: "off", tools: ["schedule"] },
-            usage: { models: {}, tools: {} },
-          },
-        ],
-      }),
-    });
+  it("rejects malformed view operations", () => {
+    expect(() =>
+      event({ type: "conversation.ops", conversationId: 1, ops: [["s", [], 1]] }),
+    ).toThrow();
+    expect(() => event({ type: "conversation.view", conversationId: 1, view: {} })).toThrow(
+      "Conversation view payload is invalid",
+    );
+  });
 
+  it("labels scheduled deliveries rather than user messages", () => {
+    const state = show(
+      initialSessionState,
+      viewOf([
+        user(
+          2,
+          formatScheduledInstruction({ id: "schedule:2", instruction: "Look outside the window" }),
+        ),
+        user(
+          3,
+          formatScheduledInstruction({
+            id: "schedule:3",
+            instruction: "Check again tomorrow",
+            recurrence: { cadence: { unit: "day", interval: 1 }, timezone: "Europe/Vienna" },
+          }),
+        ),
+      ]),
+    );
     expect(state.snapshots[1]?.entries).toEqual([
       expect.objectContaining({
         role: "scheduled",
         text: "Look outside the window",
         canFork: false,
       }),
-      expect.objectContaining({
-        role: "scheduled",
-        text: "Check again tomorrow",
-        canFork: false,
-      }),
+      expect.objectContaining({ role: "scheduled", text: "Check again tomorrow", canFork: false }),
     ]);
   });
 
-  it("labels compaction and reset entries and strips the summary wrapper", () => {
-    const state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "snapshot",
-            entries: [
-              {
-                id: 5,
-                conversationId: 1,
-                kind: "pi.compaction",
-                head: 3,
-                model: [
-                  {
-                    role: "user",
-                    content: [
-                      {
-                        type: "text",
-                        text: "The conversation history before this point was compacted into the following summary:\n\n<summary>\nUser asked about weather.\n</summary>",
-                      },
-                    ],
-                    timestamp: 1,
-                  },
-                ],
-                data: { reason: "threshold" },
-              },
-              { id: 6, conversationId: 1, kind: "pi.reset", head: 6 },
-              {
-                id: 7,
-                conversationId: 1,
-                kind: "pi.reset",
-                head: 7,
-                model: [{ role: "user", content: "Continue from the handoff.", timestamp: 2 }],
-              },
-            ],
-            tools: [],
-            compactions: [],
-            inbox: [],
-            agent: { thinkingLevel: "off", tools: [] },
-            usage: { models: {}, tools: {} },
-          },
-        ],
-      }),
-    });
-
+  it("labels compaction and reset entries in place and strips the summary wrapper", () => {
+    const state = show(
+      initialSessionState,
+      viewOf([
+        user(2, "Before the summary"),
+        {
+          id: 5,
+          conversationId: 1,
+          kind: "pi.compaction",
+          head: 3,
+          model: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: "The conversation history before this point was compacted into the following summary:\n\n<summary>\nUser asked about weather.\n</summary>",
+                },
+              ],
+              timestamp: 1,
+            },
+          ],
+          data: { reason: "threshold" },
+        },
+        { id: 6, conversationId: 1, kind: "pi.reset", head: 6 },
+        {
+          id: 7,
+          conversationId: 1,
+          kind: "pi.reset",
+          head: 7,
+          model: [{ role: "user", content: "Continue from the handoff.", timestamp: 2 }],
+        },
+      ]),
+    );
+    // The view keeps the history; head markers sit where they were written.
     expect(state.snapshots[1]?.entries).toEqual([
+      expect.objectContaining({ role: "user", text: "Before the summary" }),
       expect.objectContaining({
         role: "compaction",
         text: "User asked about weather.",
@@ -238,39 +205,31 @@ describe("session event reducer", () => {
 
   it("omits the rendered diagnostics block from tool result text", () => {
     const diagnostics = [{ severity: "warn", code: "truncated", message: "Output truncated" }];
-    const state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "entry_appended",
-            entry: {
-              id: 4,
-              conversationId: 1,
-              kind: "pi.tool-result",
-              model: [
-                {
-                  role: "toolResult",
-                  toolCallId: "call-1",
-                  toolName: "get_weather",
-                  content: [
-                    { type: "text", text: "Sunny" },
-                    { type: "text", text: "<harness>\n[warn] Output truncated\n</harness>" },
-                  ],
-                  details: { source: "cache" },
-                  isError: false,
-                  timestamp: 1,
-                },
+    const state = show(
+      initialSessionState,
+      viewOf([
+        {
+          id: 4,
+          conversationId: 1,
+          kind: "pi.tool-result",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId: "call-1",
+              toolName: "get_weather",
+              content: [
+                { type: "text", text: "Sunny" },
+                { type: "text", text: "<harness>\n[warn] Output truncated\n</harness>" },
               ],
-              data: { diagnostics },
+              details: { source: "cache" },
+              isError: false,
+              timestamp: 1,
             },
-          },
-        ],
-      }),
-    });
-
+          ],
+          data: { diagnostics },
+        },
+      ]),
+    );
     expect(state.snapshots[1]?.entries).toEqual([
       expect.objectContaining({
         role: "tool",
@@ -287,91 +246,172 @@ describe("session event reducer", () => {
   });
 
   it("keeps assistant tool calls structured instead of repeating them as transcript text", () => {
-    const state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "entry_appended",
-            entry: {
-              id: 3,
-              conversationId: 1,
-              kind: "pi.assistant",
-              model: [
+    const state = show(
+      initialSessionState,
+      viewOf([
+        {
+          id: 3,
+          conversationId: 1,
+          kind: "pi.assistant",
+          model: [
+            {
+              ...assistant("I will check."),
+              content: [
+                { type: "text", text: "I will check." },
                 {
-                  ...assistant("I will check."),
-                  content: [
-                    { type: "text", text: "I will check." },
-                    {
-                      type: "toolCall",
-                      id: "call-1",
-                      name: "get_weather",
-                      arguments: { location: "Vienna" },
-                    },
-                  ],
+                  type: "toolCall",
+                  id: "call-1",
+                  name: "get_weather",
+                  arguments: { location: "Vienna" },
                 },
               ],
             },
-          },
-        ],
-      }),
-    });
-
+          ],
+        },
+      ]),
+    );
     expect(state.snapshots[1]?.entries).toEqual([
       expect.objectContaining({
         role: "assistant",
         text: "I will check.",
-        toolCalls: [
-          {
-            callId: "call-1",
-            name: "get_weather",
-            args: { location: "Vienna" },
-          },
-        ],
+        toolCalls: [{ callId: "call-1", name: "get_weather", args: { location: "Vienna" } }],
       }),
     ]);
   });
 
-  it("tracks live compactions from snapshots and events", () => {
+  it("shows tool progress, compactions, the agent, and usage from the view's documents", () => {
+    const state = show(
+      initialSessionState,
+      viewOf([], {
+        "pi.live": {
+          run: { taskId: 5, inputs: [3], turns: 1 },
+          tools: [
+            {
+              callId: "call-1",
+              name: "search",
+              status: "running",
+              taskId: 8,
+              output: "searching",
+              details: { matches: 2 },
+              diagnostics: [{ severity: "info", message: "Using cached index" }],
+            },
+          ],
+          compactions: [{ taskId: 9, trigger: "threshold", blocking: true, attempt: 1 }],
+        },
+        "pi.agent": {
+          model: { provider: "openai", modelId: "gpt-test" },
+          thinkingLevel: "high",
+          tools: ["search"],
+        },
+        "pi.usage": {
+          models: {
+            "openai/gpt-test": { ...usage, input: 10, output: 5, totalTokens: 15 },
+          },
+          tools: {},
+        },
+      }),
+    );
+    expect(state.snapshots[1]).toMatchObject({
+      live: { active: true, text: "" },
+      tools: [
+        {
+          callId: "call-1",
+          name: "search",
+          status: "running",
+          output: "searching",
+          details: { matches: 2 },
+          diagnostics: [{ severity: "info", message: "Using cached index" }],
+        },
+      ],
+      compactions: [{ taskId: 9, reason: "threshold", blocking: true }],
+      agent: {
+        model: { provider: "openai", modelId: "gpt-test" },
+        thinkingLevel: "high",
+        tools: ["search"],
+      },
+      usage: { models: { "openai/gpt-test": { input: 10, output: 5, totalTokens: 15 } } },
+    });
+  });
+
+  it("explains a run or compaction that ended without a result", () => {
+    let state = show(
+      initialSessionState,
+      viewOf([], {
+        "pi.live": {
+          runFailure: { taskId: 9, inputs: [3], reason: "model_error", detail: "401 Unauthorized" },
+          compactionFailure: { taskId: 10, trigger: "manual", error: "summary failed" },
+        },
+      }),
+    );
+    expect(state.snapshots[1]?.failure).toEqual({
+      taskId: 9,
+      kind: "Run",
+      message: "The model request failed: 401 Unauthorized",
+    });
+
+    state = show(
+      state,
+      viewOf([], {
+        "pi.live": {
+          compactionFailure: { taskId: 10, trigger: "manual", error: "summary failed" },
+        },
+      }),
+    );
+    expect(state.snapshots[1]?.failure).toEqual({
+      taskId: 10,
+      kind: "Compaction",
+      message: "summary failed",
+    });
+
+    state = show(state, viewOf([], { "pi.live": { run: { taskId: 11, inputs: [12], turns: 0 } } }));
+    expect(state.snapshots[1]?.failure).toBeUndefined();
+  });
+
+  it("lists queued inputs from the inbox document, without passive writes", () => {
+    const state = show(
+      initialSessionState,
+      viewOf([], {
+        "pi.inbox": {
+          items: [
+            { id: 5, mode: "followUp", content: "Next question" },
+            {
+              id: 6,
+              mode: "steer",
+              content: [{ type: "text", text: "Faster" }, { type: "image" }],
+            },
+            { id: 7, mode: "write", content: "context only" },
+          ],
+        },
+      }),
+    );
+    expect(state.snapshots[1]?.queued).toEqual([
+      { submissionId: 5, mode: "followUp", text: "Next question" },
+      { submissionId: 6, mode: "steer", text: "Faster\n[Image]" },
+    ]);
+  });
+
+  it("offers earlier entries and missing ranges the client has not loaded", () => {
+    const client = transcript();
+    let state = show(
+      initialSessionState,
+      viewOf([user(11, "Eleven"), user(12, "Twelve")], {}, 10),
+      client,
+    );
+    expect(state.snapshots[1]).toMatchObject({ earlier: true, gaps: [] });
+
+    // A reconnect whose window starts past what the client holds leaves a gap between them.
+    state = show(state, viewOf([user(20, "Twenty")], {}, 15), client);
+    expect(state.snapshots[1]?.entries.map(({ id }) => id)).toEqual([11, 12, 20]);
+    expect(state.snapshots[1]?.gaps).toEqual([{ kind: "gap", after: 12, upTo: 20 }]);
+  });
+
+  it("keeps typing presence when the view changes", () => {
     let state = sessionReducer(initialSessionState, {
       type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "snapshot",
-            entries: [],
-            tools: [],
-            compactions: [{ taskId: 8, reason: "threshold", blocking: false, attempt: 1 }],
-            inbox: [],
-            agent: { thinkingLevel: "off", tools: [] },
-            usage: { models: {}, tools: {} },
-          },
-          { type: "compaction_start", taskId: 9, reason: "overflow", blocking: true },
-        ],
-      }),
+      event: event({ type: "presence.typing", conversationId: 1, usernames: ["Bob"] }),
     });
-
-    expect(state.snapshots[1]?.compactions).toEqual([
-      { taskId: 8, reason: "threshold", blocking: false },
-      { taskId: 9, reason: "overflow", blocking: true },
-    ]);
-
-    state = sessionReducer(state, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          { type: "compaction_end", taskId: 8, reason: "threshold" },
-          { type: "compaction_end", taskId: 9, reason: "overflow" },
-        ],
-      }),
-    });
-    expect(state.snapshots[1]?.compactions).toEqual([]);
+    state = show(state, viewOf([user(2, "Hi")]));
+    expect(state.snapshots[1]?.typing).toEqual(["Bob"]);
   });
 
   it("does not change the selected conversation for prompt acknowledgements", () => {
@@ -456,13 +496,14 @@ describe("session event reducer", () => {
     expect(
       event({
         type: "session.activity",
-        activity: { tasks: { "6": { ...sleeping, blocked: "restart_limit" } } },
+        activity: { tasks: { "6": { ...sleeping, blocked: "missing_task" } } },
       }),
-    ).toMatchObject({ activity: { tasks: { "6": { blocked: "restart_limit" } } } });
+    ).toMatchObject({ activity: { tasks: { "6": { blocked: "missing_task" } } } });
+    // Pi Durable 1.5 ends tasks at the restart limit instead of parking them.
     expect(() =>
       event({
         type: "session.activity",
-        activity: { tasks: { "6": { ...sleeping, blocked: "tired" } } },
+        activity: { tasks: { "6": { ...sleeping, blocked: "restart_limit" } } },
       }),
     ).toThrow("Activity task blocked reason is invalid");
 
@@ -539,225 +580,6 @@ describe("session event reducer", () => {
     ).toThrow("Command result command is invalid");
   });
 
-  it("inserts streamed blocks and applies nested tool-call deltas", () => {
-    let state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "message_start",
-            message: assistant("tail"),
-          },
-          {
-            type: "message_update",
-            usage,
-            changes: [
-              { type: "text_start", contentIndex: 0, block: { type: "text", text: "" } },
-              { type: "text_delta", contentIndex: 0, delta: "Hello" },
-              {
-                type: "toolcall_start",
-                contentIndex: 1,
-                block: {
-                  type: "toolCall",
-                  id: "call-1",
-                  name: "search",
-                  arguments: { query: "hel", options: { region: "e" } },
-                },
-              },
-              {
-                type: "toolcall_delta",
-                contentIndex: 1,
-                path: ["query"],
-                delta: "lo",
-              },
-              {
-                type: "toolcall_delta",
-                contentIndex: 1,
-                path: ["options", "region"],
-                delta: "u",
-              },
-            ],
-          },
-        ],
-      }),
-    });
-
-    expect(state.snapshots[1]?.partial?.content).toEqual([
-      { type: "text", text: "Hello" },
-      {
-        type: "toolCall",
-        id: "call-1",
-        name: "search",
-        arguments: { query: "hello", options: { region: "eu" } },
-      },
-      { type: "text", text: "tail" },
-    ]);
-  });
-
-  it("tracks tool progress, usage, and configuration changes", () => {
-    let state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "snapshot",
-            entries: [],
-            tools: [],
-            compactions: [],
-            inbox: [],
-            agent: { thinkingLevel: "off", tools: [] },
-            usage: { models: {}, tools: {} },
-          },
-          {
-            type: "tool_execution_start",
-            toolCallId: "call-1",
-            toolName: "search",
-            args: { query: "durable agents" },
-          },
-          {
-            type: "tool_execution_update",
-            toolCallId: "call-1",
-            toolName: "search",
-            output: { set: "searching" },
-            details: { matches: 2 },
-            diagnostics: [{ severity: "info", message: "Using cached index" }],
-          },
-          {
-            type: "tool_execution_update",
-            toolCallId: "call-1",
-            toolName: "search",
-            output: { trimStart: 6, append: "ed" },
-          },
-          {
-            type: "agent_changed",
-            agent: {
-              model: { provider: "openai", modelId: "gpt-test" },
-              thinkingLevel: "high",
-              tools: ["search"],
-            },
-          },
-          {
-            type: "usage_changed",
-            usage: {
-              models: {
-                "openai/gpt-test": {
-                  ...usage,
-                  input: 10,
-                  output: 5,
-                  totalTokens: 15,
-                  cost: { ...usage.cost, total: 0.0125 },
-                },
-              },
-              tools: {},
-            },
-          },
-          {
-            type: "tool_execution_end",
-            toolCallId: "call-1",
-            toolName: "search",
-          },
-        ],
-      }),
-    });
-
-    expect(state.snapshots[1]).toMatchObject({
-      tools: [
-        {
-          callId: "call-1",
-          name: "search",
-          status: "done",
-          args: { query: "durable agents" },
-          output: "inged",
-          details: { matches: 2 },
-          diagnostics: [{ severity: "info", message: "Using cached index" }],
-        },
-      ],
-      agent: {
-        model: { provider: "openai", modelId: "gpt-test" },
-        thinkingLevel: "high",
-        tools: ["search"],
-      },
-      usage: {
-        models: { "openai/gpt-test": { input: 10, output: 5, totalTokens: 15 } },
-      },
-    });
-
-    state = sessionReducer(state, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [{ type: "run_end", inputs: [] }],
-      }),
-    });
-    expect(state.snapshots[1]?.tools).toEqual([]);
-  });
-
-  it("surfaces task failures until another run starts", () => {
-    let state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [{ type: "task_failed", taskId: 9, kind: "pi.generation", message: "boom" }],
-      }),
-    });
-
-    expect(state.snapshots[1]?.failure).toEqual({
-      taskId: 9,
-      kind: "pi.generation",
-      message: "boom",
-    });
-
-    state = sessionReducer(state, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [{ type: "run_start", inputs: [10] }],
-      }),
-    });
-    expect(state.snapshots[1]?.failure).toBeUndefined();
-  });
-
-  it("tracks queued inputs across agent snapshots until the inbox drains", () => {
-    const inbox = (items: unknown[]) =>
-      event({ type: "conversation.inbox", conversationId: 1, items });
-    let state = sessionReducer(initialSessionState, {
-      type: "event",
-      event: inbox([{ submissionId: 5, mode: "followUp", text: "And tomorrow?" }]),
-    });
-    state = sessionReducer(state, {
-      type: "event",
-      event: event({
-        type: "conversation.events",
-        conversationId: 1,
-        events: [
-          {
-            type: "snapshot",
-            entries: [],
-            run: { inputs: [3] },
-            tools: [],
-            compactions: [],
-            inbox: [{ id: 5, mode: "followUp" }],
-            agent: { thinkingLevel: "off", tools: [] },
-            usage: { models: {}, tools: {} },
-          },
-        ],
-      }),
-    });
-    expect(state.snapshots[1]?.queued).toEqual([
-      { submissionId: 5, mode: "followUp", text: "And tomorrow?" },
-    ]);
-
-    state = sessionReducer(state, { type: "event", event: inbox([]) });
-    expect(state.snapshots[1]?.queued).toEqual([]);
-  });
-
   it("tracks typing presence per conversation", () => {
     let state = sessionReducer(initialSessionState, {
       type: "event",
@@ -776,13 +598,25 @@ describe("session event reducer", () => {
     expect(state.snapshots[2]?.typing).toEqual([]);
   });
 
-  it("rejects malformed queued inputs", () => {
+  it("validates entry pages in command results", () => {
+    expect(
+      event({
+        type: "command.result",
+        command: "conversation.entries",
+        requestId: "page-1",
+        ok: true,
+        conversationId: 1,
+        page: { items: [user(2, "Hi")], next: { id: 1 } },
+      }),
+    ).toMatchObject({ page: { items: [{ id: 2 }], next: { id: 1 } } });
     expect(() =>
       event({
-        type: "conversation.inbox",
-        conversationId: 1,
-        items: [{ submissionId: 5, mode: "write", text: "x" }],
+        type: "command.result",
+        command: "conversation.entries",
+        requestId: "page-1",
+        ok: true,
+        page: { items: "nope" },
       }),
-    ).toThrow("Queued input is invalid");
+    ).toThrow("Entries page is invalid");
   });
 });

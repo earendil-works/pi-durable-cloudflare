@@ -115,8 +115,7 @@ body:has(.session-workspace) {
 }
 
 .activity-toggle,
-.activity-header button,
-.activity-task-retry {
+.activity-header button {
   min-block-size: 2.75rem;
 }
 
@@ -486,4 +485,9 @@ body:has(.session-workspace) {
     grid-column: 1;
     grid-row: 2;
   }
+}
+
+.transcript-load {
+  align-self: center;
+  margin-block: 0.5rem;
 }

@@ -41,7 +41,6 @@ const graph = {
       background: true,
       abortRequested: false,
       state: { status: "sleeping", phase: "wait", until: Date.UTC(2026, 9, 1, 9) },
-      blocked: "restart_limit",
       conversations: [],
     },
     "8": {
@@ -65,7 +64,6 @@ describe("activity rendering", () => {
         activeConversationId: 1,
         onClose: () => undefined,
         onOpenConversation: () => undefined,
-        onRetryTask: async () => true,
       }),
     );
 
@@ -78,10 +76,7 @@ describe("activity rendering", () => {
     );
     expect(markup).toContain('aria-label="Children of task 4"');
     expect(markup).toContain('href="?conversation=2"');
-    expect(markup).toContain("Parked · cut off by repeated crashes");
     expect(markup).toContain("Blocked · no installed task definition");
-    // Only the task parked by the restart limit offers a retry; another blocked task does not.
-    expect(markup.match(/>Retry</g)).toHaveLength(1);
     expect(markup).toContain("Background");
     expect(markup).toContain("Aborting");
   });
@@ -93,7 +88,6 @@ describe("activity rendering", () => {
         activeConversationId: 1,
         onClose: () => undefined,
         onOpenConversation: () => undefined,
-        onRetryTask: async () => true,
       }),
     );
 

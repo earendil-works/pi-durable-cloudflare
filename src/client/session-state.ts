@@ -2,20 +2,22 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { AssistantMessage, Message, NestedToolCalls } from "@earendil-works/pi-ai";
 import type {
   AgentState,
-  AgentEvent,
   CompactionReason,
   EntryRecord,
-  JsonObject,
-  MessageChange,
-  SnapshotEvent,
-  ToolDiagnostic,
+  InboxState,
+  LiveState,
+  RunFailure,
   TaskGraph,
+  ToolDiagnostic,
+  TranscriptItem,
+  TranscriptView,
   UsageState,
 } from "@earendil-works/pi-durable";
 import { CompactionEntry, ResetEntry, ToolResultEntry } from "@earendil-works/pi-durable";
 import {
   ROOT_CONVERSATION_ID,
   parseScheduledInstruction,
+  queuedInputs,
   type ConnectionStatus,
   type ConversationSummary,
   type QueuedInput,
@@ -57,6 +59,9 @@ export interface TranscriptEntry {
   readonly toolResult?: TranscriptToolResult;
 }
 
+/** Entries the client has not loaded, between two it has: `after` and `upTo` are exclusive. */
+export type TranscriptGap = Extract<TranscriptItem, { readonly kind: "gap" }>;
+
 export interface LiveConversation {
   readonly active: boolean;
   readonly text: string;
@@ -70,7 +75,6 @@ export interface ToolProgress {
   readonly callId: string;
   readonly name: string;
   readonly status: "pending" | "running" | "done";
-  readonly args?: JsonObject;
   readonly output?: string;
   readonly details?: JsonValue;
   readonly diagnostics?: readonly ToolDiagnostic[];
@@ -82,9 +86,14 @@ export interface LiveCompaction {
   readonly blocking: boolean;
 }
 
+/** What the client renders of one conversation, derived from its view. */
 export interface ConversationSnapshot {
   readonly id: number;
   readonly entries: readonly TranscriptEntry[];
+  /** The transcript continues before the oldest entry loaded. */
+  readonly earlier: boolean;
+  /** Ranges between loaded entries that are still missing, as after a reconnect. */
+  readonly gaps: readonly TranscriptGap[];
   readonly partial?: AssistantMessage;
   readonly live: LiveConversation | null;
   readonly tools: readonly ToolProgress[];
@@ -94,6 +103,7 @@ export interface ConversationSnapshot {
   readonly typing: readonly string[];
   readonly agent?: Readonly<AgentState>;
   readonly usage?: Readonly<UsageState>;
+  /** Why the last run or compaction ended without a result, until a later one starts. */
   readonly failure?: {
     readonly taskId: number;
     readonly kind: string;
@@ -114,6 +124,8 @@ export type SessionAction =
   | { readonly type: "connection"; readonly status: ConnectionStatus }
   | { readonly type: "select"; readonly conversationId: number }
   | { readonly type: "event"; readonly event: ServerEvent }
+  /** A conversation's view with the client's whole transcript (`ConversationTranscript.merge()`). */
+  | { readonly type: "view"; readonly conversationId: number; readonly view: TranscriptView }
   | { readonly type: "error"; readonly message: string }
   | { readonly type: "clear-error" };
 
@@ -135,6 +147,16 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return { ...state, error: undefined };
     case "event":
       return reduceServerEvent(state, action.event);
+    case "view": {
+      const typing = state.snapshots[action.conversationId]?.typing ?? [];
+      return {
+        ...state,
+        snapshots: {
+          ...state.snapshots,
+          [action.conversationId]: conversationSnapshot(action.conversationId, action.view, typing),
+        },
+      };
+    }
   }
 }
 
@@ -160,29 +182,12 @@ function reduceServerEvent(state: SessionState, event: ServerEvent): SessionStat
       ].sort((left, right) => left.id - right.id);
       return { ...state, conversations };
     }
-    case "session.activity": {
+    case "session.activity":
       return { ...state, activity: event.activity };
-    }
-    case "conversation.events": {
-      const before =
-        state.snapshots[event.conversationId] ?? emptyConversation(event.conversationId);
-      const conversation = event.events.reduce(reduceAgentEvent, before);
-      return {
-        ...state,
-        snapshots: { ...state.snapshots, [event.conversationId]: conversation },
-      };
-    }
-    case "conversation.inbox": {
-      const before =
-        state.snapshots[event.conversationId] ?? emptyConversation(event.conversationId);
-      return {
-        ...state,
-        snapshots: {
-          ...state.snapshots,
-          [event.conversationId]: { ...before, queued: event.items },
-        },
-      };
-    }
+    // Views and their operations are merged into the conversation's transcript first; see `view` actions.
+    case "conversation.view":
+    case "conversation.ops":
+      return state;
     case "presence.typing": {
       const before =
         state.snapshots[event.conversationId] ?? emptyConversation(event.conversationId);
@@ -208,6 +213,8 @@ function reduceServerEvent(state: SessionState, event: ServerEvent): SessionStat
 const emptyConversation = (id: number): ConversationSnapshot => ({
   id,
   entries: [],
+  earlier: false,
+  gaps: [],
   live: null,
   tools: [],
   compactions: [],
@@ -215,187 +222,77 @@ const emptyConversation = (id: number): ConversationSnapshot => ({
   typing: [],
 });
 
-function reduceAgentEvent(
-  conversation: ConversationSnapshot,
-  event: AgentEvent,
+/**
+ * Everything the client draws of a conversation is state in its view: the transcript, and `pi.live` for the run,
+ * the streamed answer, tool progress, compactions and failures; `pi.inbox`, `pi.agent`, and `pi.usage` beside it.
+ */
+export function conversationSnapshot(
+  id: number,
+  view: TranscriptView,
+  typing: readonly string[] = [],
 ): ConversationSnapshot {
-  switch (event.type) {
-    case "snapshot":
-      return snapshotConversation(conversation, event);
-    case "run_start":
-    case "turn_start":
-      return {
-        ...conversation,
-        failure: undefined,
-        live: {
-          active: true,
-          text: conversation.live?.text ?? "",
-          retry: conversation.live?.retry,
-        },
-      };
-    case "run_end":
-      return { ...conversation, live: null, partial: undefined, tools: [] };
-    case "message_start":
-      return event.message.role === "assistant"
-        ? withPartial(conversation, event.message, conversation.live?.retry)
-        : conversation;
-    case "message_update":
-      return conversation.partial === undefined
-        ? conversation
-        : withPartial(
-            conversation,
-            applyMessageChanges(conversation.partial, event.changes, event.usage),
-            conversation.live?.retry,
-          );
-    case "message_end":
-      return clearCommittedPartial(appendEntry(conversation, event.entry), event.entry);
-    case "entry_appended":
-      return appendEntry(conversation, event.entry);
-    case "tool_execution_start":
-      return updateTool(conversation, event.toolCallId, {
-        callId: event.toolCallId,
-        name: event.toolName,
-        status: "running",
-        args: event.args,
-      });
-    case "tool_execution_update":
-      return updateToolProgress(conversation, event);
-    case "tool_execution_end":
-      return updateTool(conversation, event.toolCallId, {
-        ...(conversation.tools.find(({ callId }) => callId === event.toolCallId) ?? {
-          callId: event.toolCallId,
-          name: event.toolName,
-        }),
-        status: "done",
-      });
-    case "auto_retry_start":
-      return {
-        ...conversation,
-        live: {
-          active: true,
-          text: conversation.live?.text ?? "",
-          retry: { at: event.at, error: event.errorMessage },
-        },
-      };
-    case "auto_retry_end":
-      return conversation.live === null
-        ? conversation
-        : { ...conversation, live: { ...conversation.live, retry: undefined } };
-    case "agent_changed":
-      return { ...conversation, agent: event.agent };
-    case "usage_changed":
-      return { ...conversation, usage: event.usage };
-    case "task_failed":
-      return {
-        ...conversation,
-        failure: {
-          taskId: event.taskId,
-          kind: event.kind,
-          message: event.message,
-        },
-      };
-    case "compaction_start":
-      return conversation.compactions.some(({ taskId }) => taskId === event.taskId)
-        ? conversation
-        : {
-            ...conversation,
-            compactions: [
-              ...conversation.compactions,
-              { taskId: event.taskId, reason: event.reason, blocking: event.blocking },
-            ],
-          };
-    case "compaction_end":
-      return {
-        ...conversation,
-        compactions: conversation.compactions.filter(({ taskId }) => taskId !== event.taskId),
-      };
-    default:
-      return conversation;
-  }
-}
-
-/** Replace everything the agent snapshot describes; the queue arrives separately as `conversation.inbox`. */
-function snapshotConversation(
-  conversation: ConversationSnapshot,
-  event: SnapshotEvent,
-): ConversationSnapshot {
-  const partial = event.generation?.message;
+  const live = (view.docs["pi.live"] ?? {}) as unknown as LiveState;
+  const partial = live.generation?.message as AssistantMessage | undefined;
+  const failure = conversationFailure(live);
+  const agent = view.docs["pi.agent"] as AgentState | undefined;
+  const usage = view.docs["pi.usage"] as unknown as UsageState | undefined;
   return {
-    id: conversation.id,
-    entries: event.entries.map(transcriptEntry),
-    live: liveConversation(event.run !== undefined, partial, event.generation?.retry),
-    tools: event.tools.map((tool) => ({
-      callId: tool.callId,
-      name: tool.name,
-      status: tool.status,
-      ...(tool.output === undefined ? {} : { output: tool.output }),
-      ...(tool.details === undefined ? {} : { details: tool.details }),
-      ...(tool.diagnostics === undefined ? {} : { diagnostics: tool.diagnostics }),
+    id,
+    entries: view.items.flatMap((item) =>
+      item.kind === "entry" ? [transcriptEntry(item.entry)] : [],
+    ),
+    earlier: view.items[0]?.kind === "earlier",
+    gaps: view.items.filter((item): item is TranscriptGap => item.kind === "gap"),
+    live: liveConversation(live.run !== undefined, partial, live.generation?.retry),
+    tools: (live.tools ?? []).map((slot) => ({
+      callId: slot.callId,
+      name: slot.name,
+      status: slot.status,
+      ...(slot.output === undefined ? {} : { output: slot.output }),
+      ...(slot.details === undefined ? {} : { details: slot.details }),
+      ...(slot.diagnostics === undefined ? {} : { diagnostics: slot.diagnostics }),
     })),
-    compactions: event.compactions.map(({ taskId, reason, blocking }) => ({
+    compactions: (live.compactions ?? []).map(({ taskId, trigger, blocking }) => ({
       taskId,
-      reason,
+      reason: trigger,
       blocking,
     })),
-    agent: event.agent,
-    usage: event.usage,
-    queued: conversation.queued,
-    typing: conversation.typing,
+    queued: queuedInputs(view.docs["pi.inbox"] as InboxState | undefined),
+    typing,
     ...(partial === undefined ? {} : { partial }),
+    ...(agent === undefined ? {} : { agent }),
+    ...(usage === undefined ? {} : { usage }),
+    ...(failure === undefined ? {} : { failure }),
   };
 }
 
-function updateTool(
-  conversation: ConversationSnapshot,
-  callId: string,
-  tool: ToolProgress,
-): ConversationSnapshot {
-  const index = conversation.tools.findIndex((candidate) => candidate.callId === callId);
-  return {
-    ...conversation,
-    tools:
-      index < 0
-        ? [...conversation.tools, tool]
-        : conversation.tools.map((candidate, candidateIndex) =>
-            candidateIndex === index ? tool : candidate,
-          ),
-  };
-}
+const RUN_FAILURE_REASONS: Record<RunFailure["reason"], string> = {
+  model_error: "The model request failed",
+  no_model: "No model is available",
+  aborted: "The run was aborted",
+  reset: "The context was reset",
+  faulted: "The run faulted",
+  orphaned: "The run's task cannot run here",
+  interrupted: "The server stopped while the model was answering",
+  restart_limit: "The run was cut off too often",
+  nothing_to_answer: "There was nothing to answer",
+  turn_limit: "The run reached its tool round limit",
+};
 
-function updateToolProgress(
-  conversation: ConversationSnapshot,
-  event: Extract<AgentEvent, { readonly type: "tool_execution_update" }>,
-): ConversationSnapshot {
-  const current = conversation.tools.find(({ callId }) => callId === event.toolCallId) ?? {
-    callId: event.toolCallId,
-    name: event.toolName,
-    status: "running" as const,
-  };
-  let output = current.output;
-  if (event.output !== undefined) {
-    output =
-      "set" in event.output
-        ? event.output.set
-        : (output ?? "").slice(event.output.trimStart ?? 0) + (event.output.append ?? "");
+function conversationFailure(live: LiveState): ConversationSnapshot["failure"] {
+  const run = live.runFailure;
+  if (run !== undefined) {
+    const reason = RUN_FAILURE_REASONS[run.reason] ?? run.reason;
+    return {
+      taskId: run.taskId,
+      kind: "Run",
+      message: run.detail === undefined ? reason : `${reason}: ${run.detail}`,
+    };
   }
-  return updateTool(conversation, event.toolCallId, {
-    ...current,
-    ...(output === undefined ? {} : { output }),
-    ...("details" in event ? { details: event.details } : {}),
-    ...("diagnostics" in event ? { diagnostics: event.diagnostics } : {}),
-  });
-}
-
-function withPartial(
-  conversation: ConversationSnapshot,
-  partial: AssistantMessage,
-  retry: LiveConversation["retry"],
-): ConversationSnapshot {
-  return {
-    ...conversation,
-    partial,
-    live: liveConversation(true, partial, retry),
-  };
+  const compaction = live.compactionFailure;
+  return compaction === undefined
+    ? undefined
+    : { taskId: compaction.taskId, kind: "Compaction", message: compaction.error };
 }
 
 function liveConversation(
@@ -409,117 +306,6 @@ function liveConversation(
     text: partial === undefined ? "" : assistantText(partial.content),
     ...(retry === undefined ? {} : { retry }),
   };
-}
-
-function clearCommittedPartial(
-  conversation: ConversationSnapshot,
-  entry: EntryRecord,
-): ConversationSnapshot {
-  if (entry.model?.[0]?.role !== "assistant" || conversation.partial === undefined)
-    return conversation;
-  return {
-    ...conversation,
-    partial: undefined,
-    live:
-      conversation.live === null
-        ? null
-        : { active: conversation.live.active, text: "", retry: conversation.live.retry },
-  };
-}
-
-function appendEntry(conversation: ConversationSnapshot, entry: EntryRecord): ConversationSnapshot {
-  if (conversation.entries.some(({ id }) => id === entry.id)) return conversation;
-  const next = transcriptEntry(entry);
-  if (entry.head === undefined)
-    return { ...conversation, entries: [...conversation.entries, next] };
-  const kept = conversation.entries.findIndex(
-    (candidate) => candidate.id >= entry.head! && candidate.kind !== "pi.reset",
-  );
-  return {
-    ...conversation,
-    entries: [next, ...conversation.entries.slice(kept < 0 ? conversation.entries.length : kept)],
-  };
-}
-
-function applyMessageChanges(
-  current: AssistantMessage,
-  changes: readonly MessageChange[],
-  usage: AssistantMessage["usage"],
-): AssistantMessage {
-  let message = structuredClone(current);
-  for (const change of changes) {
-    if (change.type === "message") {
-      message = structuredClone(change.message);
-      continue;
-    }
-    if (change.type === "block") {
-      message.content[change.contentIndex] = structuredClone(change.block);
-    } else if (
-      change.type === "text_start" ||
-      change.type === "thinking_start" ||
-      change.type === "toolcall_start"
-    ) {
-      message.content.splice(change.contentIndex, 0, structuredClone(change.block));
-    } else if (change.type === "text_delta") {
-      const block = message.content[change.contentIndex];
-      if (block?.type !== "text") throw new Error("Text delta does not target a text block");
-      block.text += change.delta;
-    } else if (change.type === "thinking_delta") {
-      const block = message.content[change.contentIndex];
-      if (block?.type !== "thinking") {
-        throw new Error("Thinking delta does not target a thinking block");
-      }
-      block.thinking += change.delta;
-    } else if (change.type === "toolcall_delta") {
-      applyToolCallDelta(message, change);
-    } else {
-      throw new Error(`Unsupported message change: ${change.type}`);
-    }
-  }
-  message.usage = usage;
-  return message;
-}
-
-function applyToolCallDelta(
-  message: AssistantMessage,
-  change: Extract<MessageChange, { readonly type: "toolcall_delta" }>,
-): void {
-  const block = message.content[change.contentIndex];
-  if (block?.type !== "toolCall") throw new Error("Tool-call delta does not target a tool call");
-  if (change.path.length === 0) throw new Error("Tool-call delta path is empty");
-
-  let target: unknown = block.arguments;
-  for (const segment of change.path.slice(0, -1)) {
-    if (!isMutableContainer(target)) throw new Error("Tool-call delta path is invalid");
-    target = mutableValue(target, segment);
-  }
-  if (!isMutableContainer(target)) throw new Error("Tool-call delta target is invalid");
-  const last = change.path.at(-1)!;
-  const current = mutableValue(target, last);
-  if (typeof current !== "string") throw new Error("Tool-call delta target is not a string");
-  setMutableValue(target, last, current + change.delta);
-}
-
-type MutableContainer = Record<string | number, unknown> | unknown[];
-
-const isMutableContainer = (value: unknown): value is MutableContainer =>
-  typeof value === "object" && value !== null;
-
-function mutableValue(target: MutableContainer, segment: string | number): unknown {
-  if (Array.isArray(target)) {
-    if (typeof segment !== "number") throw new Error("Array delta path requires a numeric index");
-    return target[segment];
-  }
-  return target[String(segment)];
-}
-
-function setMutableValue(target: MutableContainer, segment: string | number, value: unknown): void {
-  if (Array.isArray(target)) {
-    if (typeof segment !== "number") throw new Error("Array delta path requires a numeric index");
-    target[segment] = value;
-  } else {
-    target[String(segment)] = value;
-  }
 }
 
 function transcriptEntry(entry: EntryRecord): TranscriptEntry {

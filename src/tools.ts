@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { defineDoc, type ToolRegistration } from "@earendil-works/pi-durable";
 import {
   DeliverScheduledInstruction,
@@ -14,8 +14,8 @@ const WEATHER_CONDITIONS = ["sunny", "partly cloudy", "overcast", "light rain"] 
 export const getWeatherTool = {
   name: "get_weather",
   description: "Get the current weather for a location. Use when the user asks about the weather.",
-  parameters: Type.Object({
-    location: Type.String({ description: "The city or location to check weather for" }),
+  parameters: obj({
+    location: str({ description: "The city or location to check weather for" }),
   }),
   replay: "safe",
   execute: async ({ location }: { location: string }) => {
@@ -130,47 +130,41 @@ export const scheduleTool: ToolRegistration = {
   name: SCHEDULE_TOOL_NAME,
   description:
     "Schedule an instruction to be delivered to this conversation at a later time. The conversation resumes then with the instruction as its input and carries it out with its normal tools. Use this whenever the user wants something to happen later; scheduling is the complete response to such a request.",
-  parameters: Type.Object({
-    instruction: Type.String({
+  parameters: obj({
+    instruction: str({
       minLength: 1,
       maxLength: MAX_PROMPT_CHARACTERS,
       description:
         "What to do when the schedule fires, phrased as a self-contained request without timing words, e.g. 'Check the weather in London'",
     }),
-    delaySeconds: Type.Optional(
-      Type.Integer({
+    delaySeconds: opt(
+      int({
         minimum: 1,
         maximum: MAX_DELAY_SECONDS,
         description: "Run after this many seconds. Use for relative times such as 'in 10 minutes'",
       }),
     ),
-    at: Type.Optional(
-      Type.String({
+    at: opt(
+      str({
         description:
           "Run at this ISO 8601 date-time with a timezone offset, e.g. 2026-10-01T09:00:00+02:00. Use for absolute times; provide exactly one of delaySeconds or at",
       }),
     ),
-    recurrence: Type.Optional(
-      Type.Object({
-        cadence: Type.Object({
-          unit: Type.Union([
-            Type.Literal("minute"),
-            Type.Literal("hour"),
-            Type.Literal("day"),
-            Type.Literal("week"),
-            Type.Literal("month"),
-          ]),
-          interval: Type.Integer({ minimum: 1, maximum: 10_000 }),
+    recurrence: opt(
+      obj({
+        cadence: obj({
+          unit: oneOf(["minute", "hour", "day", "week", "month"]),
+          interval: int({ minimum: 1, maximum: 10_000 }),
         }),
-        timezone: Type.String({
+        timezone: str({
           minLength: 1,
           maxLength: 100,
           description: "IANA timezone, e.g. Europe/Vienna or America/New_York",
         }),
       }),
     ),
-    sourceScheduleId: Type.Optional(
-      Type.String({
+    sourceScheduleId: opt(
+      str({
         description:
           "When scheduling the next occurrence of a recurring instruction, the schedule ID given in its delivery. Omit delaySeconds, at, and recurrence because the source determines them",
       }),

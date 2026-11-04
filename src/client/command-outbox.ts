@@ -2,7 +2,7 @@ import type { ClientCommand, CommandResult } from "../protocol.ts";
 
 export type RetriableCommand = Extract<
   ClientCommand,
-  { readonly type: "conversation.create" | "conversation.fork" | "prompt.submit" | "task.retry" }
+  { readonly type: "conversation.create" | "conversation.fork" | "prompt.submit" }
 >;
 
 type Completion = (accepted: boolean) => void;
