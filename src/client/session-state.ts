@@ -1,4 +1,4 @@
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { AssistantMessage, Message, NestedToolCalls } from "@earendil-works/pi-ai";
 import type {
   AgentState,
